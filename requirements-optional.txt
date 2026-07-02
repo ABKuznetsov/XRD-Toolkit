@@ -1,0 +1,4 @@
+# Optional online database connectors.
+# Install only when you need Materials Project API access.
+mp-api
+pymatgen

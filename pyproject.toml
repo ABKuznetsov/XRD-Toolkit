@@ -1,0 +1,16 @@
+[project]
+name = "xrd-finder-standalone"
+version = "0.1.0"
+description = "Standalone XRD phase finder extracted from XRD Manager."
+requires-python = ">=3.11"
+dependencies = [
+    "gemmi",
+    "numpy",
+    "pyqtgraph",
+    "PySide6",
+    "scipy",
+]
+
+[project.scripts]
+xrd-finder = "xrd_manager.apps.finder_cli:main"
+xrd-finder-gui = "xrd_manager.apps.finder_gui:main"

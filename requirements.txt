@@ -1,0 +1,5 @@
+gemmi
+numpy
+pyqtgraph
+PySide6
+scipy
