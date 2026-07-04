@@ -83,6 +83,7 @@ https://www.python.org/downloads/
 
 Windows 64bit 
 https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
+
 Windows 32bit
 https://www.python.org/ftp/python/3.11.9/python-3.11.9.exe
 
