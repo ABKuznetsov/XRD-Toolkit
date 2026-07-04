@@ -9,10 +9,11 @@ import time
 import re
 
 from xrd_manager.io.cif_loader import create_phase_from_cif
+from xrd_manager.services.cache_paths import default_phase_cache_root
 from xrd_manager.services.cod_online_service import CodEntry, CodOnlineService, formula_elements
 
 
-DEFAULT_CACHE_ROOT = Path.cwd() / "xrd_manager_data" / "cod_cache"
+DEFAULT_CACHE_ROOT = default_phase_cache_root()
 
 
 @dataclass(slots=True)
@@ -100,6 +101,22 @@ class LocalPhaseCache:
                     keep_cif=True,
                 )
 
+    def upsert_materials_project_entries(self, entries) -> None:
+        with self._connect() as connection:
+            for entry in entries:
+                self._upsert(
+                    connection,
+                    CachedPhaseEntry(
+                        source="MP",
+                        entry_id=entry.material_id,
+                        formula=entry.formula,
+                        name=entry.name or entry.formula,
+                        spacegroup=entry.spacegroup,
+                        source_text=entry.energy_above_hull,
+                    ),
+                    keep_cif=True,
+                )
+
     def search(
         self,
         text: str = "",
@@ -112,29 +129,46 @@ class LocalPhaseCache:
         excluded = {element.strip() for element in excluded_elements or [] if element.strip()}
         allowed_sources = {source.strip() for source in sources or [] if source.strip()}
         text = text.strip().lower()
+        where = ["1 = 1"]
+        params: list[object] = []
+        if allowed_sources:
+            placeholders = ", ".join("?" for _ in allowed_sources)
+            where.append(f"source in ({placeholders})")
+            params.extend(sorted(allowed_sources))
+        for element in sorted(required):
+            where.append("' ' || elements || ' ' like ?")
+            params.append(f"% {element} %")
+        for element in sorted(excluded):
+            where.append("' ' || elements || ' ' not like ?")
+            params.append(f"% {element} %")
+        if text:
+            like_text = f"%{text}%"
+            compact_formula = self._formula_key(text)
+            where.append(
+                "("
+                "lower(entry_id) like ? or "
+                "lower(formula) like ? or "
+                "lower(name) like ? or "
+                "lower(spacegroup) like ? or "
+                "formula_key like ?"
+                ")"
+            )
+            params.extend([like_text, like_text, like_text, like_text, f"%{compact_formula}%"])
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 select source, entry_id, formula, name, spacegroup, source_text, cif_path, elements,
                        a, b, c, alpha, beta, gamma, volume, atoms_json
                 from phases
-                where cif_path != ''
+                where {" and ".join(where)}
                 order by updated_at desc
-                """
+                limit ?
+                """,
+                (*params, max(limit * 5, limit)),
             ).fetchall()
         results = []
         seen = set()
         for row in rows:
-            if allowed_sources and row["source"] not in allowed_sources:
-                continue
-            row_elements = set((row["elements"] or "").split())
-            if required and not required.issubset(row_elements):
-                continue
-            if excluded and row_elements & excluded:
-                continue
-            haystack = " ".join([row["entry_id"], row["formula"], row["name"], row["spacegroup"]]).lower()
-            if text and text not in haystack:
-                continue
             dedupe_key = self._dedupe_key(row)
             if dedupe_key in seen:
                 continue
@@ -209,6 +243,19 @@ class LocalPhaseCache:
             count += 1
         return count
 
+    def clear_user_library(self) -> None:
+        self._clear_sources(["USER"])
+        self._remove_cache_dirs(["user_cif"])
+
+    def clear_cod_cache(self) -> None:
+        self._clear_sources(["COD"])
+        self._remove_cache_dirs(["cif", "cod_bulk_cif", "downloads"])
+        self.cif_dir.mkdir(parents=True, exist_ok=True)
+
+    def clear_materials_project_cache(self) -> None:
+        self._clear_sources(["MP"])
+        self._remove_cache_dirs(["materials_project_cif"])
+
     def index_cif_folder(self, folder: str | Path, source: str = "COD") -> int:
         root = Path(folder)
         if not root.exists():
@@ -274,6 +321,7 @@ class LocalPhaseCache:
                     spacegroup text not null default '',
                     source_text text not null default '',
                     elements text not null default '',
+                    formula_key text not null default '',
                     cif_path text not null default '',
                     a real,
                     b real,
@@ -304,12 +352,35 @@ class LocalPhaseCache:
                     connection.execute(f"alter table phases add column {column} real")
             if "atoms_json" not in existing:
                 connection.execute("alter table phases add column atoms_json text not null default ''")
+            if "formula_key" not in existing:
+                connection.execute("alter table phases add column formula_key text not null default ''")
+                connection.execute("update phases set formula_key = lower(replace(formula, ' ', '')) where formula_key = ''")
+            connection.execute("create index if not exists idx_phases_source_updated on phases(source, updated_at desc)")
+            connection.execute("create index if not exists idx_phases_formula_key on phases(formula_key)")
+            connection.execute("create index if not exists idx_phases_elements on phases(elements)")
 
     def _connect(self) -> sqlite3.Connection:
         self.root.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.index_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _clear_sources(self, sources: list[str]) -> None:
+        if not sources:
+            return
+        placeholders = ", ".join("?" for _ in sources)
+        with self._connect() as connection:
+            connection.execute(f"delete from phases where source in ({placeholders})", sources)
+            connection.execute(f"delete from search_cache where source in ({placeholders})", sources)
+
+    def _remove_cache_dirs(self, names: list[str]) -> None:
+        root = self.root.resolve()
+        for name in names:
+            path = (self.root / name).resolve()
+            if path == root or root not in path.parents:
+                continue
+            if path.exists():
+                shutil.rmtree(path)
 
     def _upsert(self, connection: sqlite3.Connection, entry: CachedPhaseEntry, keep_cif: bool) -> None:
         old_cif = ""
@@ -323,16 +394,17 @@ class LocalPhaseCache:
         connection.execute(
             """
             insert into phases(
-                source, entry_id, formula, name, spacegroup, source_text, elements, cif_path,
+                source, entry_id, formula, name, spacegroup, source_text, elements, formula_key, cif_path,
                 a, b, c, alpha, beta, gamma, volume, atoms_json, updated_at
             )
-            values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             on conflict(source, entry_id) do update set
                 formula = excluded.formula,
                 name = excluded.name,
                 spacegroup = excluded.spacegroup,
                 source_text = excluded.source_text,
                 elements = excluded.elements,
+                formula_key = excluded.formula_key,
                 cif_path = excluded.cif_path,
                 a = excluded.a,
                 b = excluded.b,
@@ -352,6 +424,7 @@ class LocalPhaseCache:
                 entry.spacegroup,
                 entry.source_text,
                 " ".join(sorted(formula_elements(entry.formula))),
+                self._formula_key(entry.formula),
                 cif_path,
                 entry.a,
                 entry.b,
@@ -413,6 +486,12 @@ class LocalPhaseCache:
             amount_text = amount.rstrip("0").rstrip(".") if amount else "1"
             parts.append(f"{element}{amount_text}")
         return " ".join(parts)
+
+    def _formula_key(self, formula: str) -> str:
+        tokens = re.findall(r"([A-Z][a-z]?)([0-9.]+)?", formula or "")
+        if not tokens:
+            return re.sub(r"\s+", "", (formula or "").lower())
+        return "".join(f"{element.lower()}{amount}" for element, amount in tokens)
 
     def _normalize_text(self, text: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()

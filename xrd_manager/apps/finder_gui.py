@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from xrd_manager.core.pattern import Pattern
@@ -34,8 +35,13 @@ def main() -> int:
     args = parser.parse_args()
 
     app = QApplication.instance() or QApplication(sys.argv)
+    icon_path = Path(__file__).resolve().parents[2] / "icon.png"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     project = build_local_project(args.pattern, args.cif)
     window = PhaseFinderWindow(project)
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
     window.setWindowTitle(f"XRD Finder - {project.name}")
     window.show()
     return int(app.exec())

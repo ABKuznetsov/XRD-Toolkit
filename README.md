@@ -3,40 +3,83 @@
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Status](https://img.shields.io/badge/Status-Beta-orange.svg)
+![Status](https://img.shields.io/badge/Status-Stable-green.svg)
 
-**XRD Analysis Toolkit** is an open-source, cross-platform application for **phase identification from powder X-ray diffraction (XRD) patterns** using open crystallographic databases and CIF-based diffraction simulation.
+**XRD Analysis Toolkit** is an open-source, cross-platform application for **phase identification from powder X-ray diffraction (XRD) patterns** using open crystallographic databases, local reference libraries and CIF-based diffraction simulation.
 
-The project is designed as a lightweight alternative to commercial search-match software and focuses on helping researchers interpret diffraction patterns by combining experimental data with theoretical diffraction profiles calculated directly from crystal structures.
+The project is designed as a lightweight research tool for search-match work: import one or many experimental diffraction patterns, select elemental constraints, search candidate phases, preview reference peaks, calculate CIF-based profiles and build an interpretable set of selected phases.
 
----
-
-# Screenshot
-
-<img width="3254" height="1747" alt="image" src="https://github.com/user-attachments/assets/ddbe0121-46c0-4555-9a4c-24e9d0673093" />
-
-
-
-**Main window of the XRD Phase Finder.**
-The application displays the experimental diffraction pattern, calculated profile, theoretical peak positions of selected phases, and highlights diffraction peaks that remain unexplained by the current phase set.
+It is especially focused on practical laboratory workflows where the user needs to compare experimental XRD data with COD/CIF structures, local phase libraries, RRUFF measured patterns, Materials Project structures, CCDC/CSD entries and optional PDF-2 cards from a local Match installation.
 
 ---
+
+# Screenshots
+
+## Phase Search Overview
+
+![Phase search overview](docs/screenshots/phase-search-overview.png)
+
+The main Phase Finder view combines an observed XRD pattern, selected candidate phases, calculated profiles, peak markers and element-based search controls.
+
+## Candidate Preview
+
+![Candidate preview](docs/screenshots/candidate-preview.png)
+
+Single-clicking a candidate previews its strongest reference or calculated peaks directly in the experimental pattern area. Double-clicking a structural candidate adds it to the selected phase set.
+
+## Multi-pattern Comparison
+
+![Multi-pattern stack](docs/screenshots/multi-pattern-stack.png)
+
+Several checked XRD patterns can be displayed together with a controlled vertical offset. The highlighted row in the project tree remains the active pattern for search and candidate preview.
+
+## Compound Card
+
+![Compound card](docs/screenshots/compound-card.png)
+
+The compound card shows phase metadata, formula, I/Ic estimate, publication/source links, space group, cell parameters, atom positions and diffraction lines when available.
+
+## Database Management
+
+![Database panel](docs/screenshots/database-panel.png)
+
+The Databases tab controls which sources participate in search and provides explicit update/clear actions for local caches.
 
 # Features
 
+## Search and Identification
+
 - Powder XRD pattern viewer
-- Multi-pattern XRD series display with vertical offsets
-- Drag-and-drop import for XRD and CIF files
 - Automatic peak detection
-- Search using the Crystallography Open Database (COD)
-- Local CIF database support
+- Element filters with required and optional elements
+- COD online search and local COD/CIF indexing
+- User CIF library indexing
+- Optional CCDC/CSD DOI/refcode lookup when the CCDC Python API is available
+- Optional Materials Project search with API key
+- Optional RRUFF measured powder-pattern overlays
+- Optional PDF-2 reference-card support from a local Match installation
+- Candidate ranking by estimated peak-match probability for locally available structures
+
+## Visualization
+
+- Single-pattern and multi-pattern XRD display
+- Vertical offset control for stacked XRD patterns
+- Stable zoom while browsing candidates
+- Candidate preview peaks shown directly over the active XRD pattern
+- Persistent selected-phase overlays with editable colors
+- Optional HKL labels
+- High-resolution plot export
+
+## Structure and Phase Data
+
+- Drag-and-drop import for XRD and CIF files
 - CIF-based diffraction pattern simulation
 - Multi-phase profile calculation
 - Automatic profile scaling
 - Peak assignment framework
 - Identification of unexplained diffraction peaks
 - Compound cards with cell parameters, atom positions and publication links
-- High-resolution plot export
+- Diffraction-line tables in compound cards
 - Cross-platform support (Windows, macOS and Linux)
 
 ---
@@ -51,7 +94,7 @@ Peak detection
         │
         ▼
 Search candidate phases
-(COD / Local Database)
+(COD / local CIF / RRUFF / PDF-2 / CCDC / Materials Project)
         │
         ▼
 Load crystal structures (CIF)
@@ -71,6 +114,31 @@ Identify unexplained peaks
 
 ---
 
+# Interaction Guide
+
+- **Element table**
+  - Left click marks an element as required.
+  - Right click marks an element as optional.
+  - Clicking again removes that element from the gate.
+- **Candidate list**
+  - Single click previews the candidate and opens its card.
+  - Double click adds a structural candidate to the selected phase set.
+  - Right click opens actions such as add, calculate overlay and export CIF.
+- **Selected candidates**
+  - Single click shows that phase in the plot and card.
+  - Right click changes color, exports CIF, removes the phase or clears the list.
+- **Project tree**
+  - The highlighted XRD row is the active pattern for search and preview.
+  - Checkboxes control what is visible in the plot.
+  - Order arrows change plot and legend order.
+- **Plot**
+  - Use mouse zoom/pan normally.
+  - `Reset view` or right click -> `Show full pattern` returns to the full range.
+
+The `?` button in the application opens a compact in-app helper with the same core controls.
+
+---
+
 # Installation
 
 ## Requirements
@@ -81,15 +149,11 @@ Download Python from the official website:
 
 https://www.python.org/downloads/
 
-Windows 64bit 
-https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
+Direct Python 3.11.9 installers:
 
-Windows 32bit
-https://www.python.org/ftp/python/3.11.9/python-3.11.9.exe
-
-MacOS
-https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg
-
+- Windows 64-bit: https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
+- Windows 32-bit: https://www.python.org/ftp/python/3.11.9/python-3.11.9.exe
+- macOS: https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg
 
 ---
 
@@ -235,6 +299,7 @@ Use the checkboxes to enable only the databases you want:
 - COD local
 - COD online
 - RRUFF
+- PDF-2
 - Materials Project
 
 Large databases are never downloaded automatically. Use the buttons in
@@ -247,6 +312,10 @@ Large databases are never downloaded automatically. Use the buttons in
 
 RRUFF entries are measured reference patterns. They can be overlaid on the
 experimental pattern, but they are not calculated CIF phase profiles.
+
+PDF-2 entries are local reference cards. The software can read a local Match
+`PDF2-2004` folder when available, but the PDF-2 database itself is not bundled
+or redistributed.
 
 ---
 
@@ -302,6 +371,9 @@ pyproject.toml
 ```
 
 Downloaded databases, user libraries and local caches are intentionally excluded from the repository.
+By default, new local cache data is stored outside the source tree in the user data directory
+(`%LOCALAPPDATA%\XRD Finder` on Windows, `~/Library/Application Support/XRD Finder` on macOS,
+and the XDG data directory on Linux). Set `XRD_MANAGER_DATA_DIR` to use a custom location.
 
 ---
 
@@ -322,20 +394,11 @@ The current implementation is intended for **initial phase identification** and 
 
 # Current Status
 
-Current development stage:
+Current development stage: **1.0 stable release**.
 
-**Beta**
+The application is ready for practical search-match and visual phase-identification workflows. Quantification, I/Ic and probability values should be treated as interpretive aids rather than a substitute for full-profile refinement.
 
-Implemented
-
-- ✔ Experimental XRD viewer
-- ✔ Phase Finder
-- ✔ COD search
-- ✔ CIF parser
-- ✔ Structure-based diffraction simulation
-- ✔ Multi-phase profile calculation
-- ✔ Peak assignment framework
-
+Planned next steps include batch processing, stronger separation of fitting services from the UI layer and expanded automated tests.
 
 ---
 

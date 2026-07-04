@@ -1,11 +1,24 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 - 2026-07-04
 
 ### Added
 
 - Linux launch scripts: `setup_env.sh`, `run_finder.sh`, and `run_finder_cli.sh`.
 - Linux installation notes for Python venv/pip and Qt desktop packages.
+- PDF-2 reference-card support from a local Match `PDF2-2004` folder.
+- Structural/reference data switches for separating CIF-calculated phases from measured/reference cards.
+- Peak-match probability column and optional candidate ranking by active XRD pattern.
+- Application data/cache paths outside the repository using OS-native locations.
+- Database clear/update actions for user library, COD, RRUFF, PDF-2 and Materials Project caches.
+- Redesigned compound card with scrollable sections, atom table, diffraction-line table and source links.
+
+### Changed
+
+- COD and Materials Project online searches now return rows immediately and download CIFs in the background when possible.
+- Local phase cache search now uses indexed SQL filters for source, formula key and elements.
+- RRUFF indexing now refreshes the local table cleanly and supports suffixed RRUFF identifiers.
+- XY import handles mixed comma/space/semicolon numeric formats more robustly.
 
 ## 0.2.0 - 2026-07-04
 

@@ -1,7 +1,7 @@
 [project]
 name = "xrd-finder-standalone"
-version = "0.2.0"
-description = "Standalone XRD phase finder extracted from XRD Manager."
+version = "1.0.0"
+description = "Cross-platform XRD phase finder for powder diffraction search-match workflows."
 requires-python = ">=3.11"
 dependencies = [
     "gemmi",
@@ -14,3 +14,15 @@ dependencies = [
 [project.scripts]
 xrd-finder = "xrd_manager.apps.finder_cli:main"
 xrd-finder-gui = "xrd_manager.apps.finder_gui:main"
+
+[tool.ruff]
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "build",
+    "dist",
+    "xrd_manager_data",
+]

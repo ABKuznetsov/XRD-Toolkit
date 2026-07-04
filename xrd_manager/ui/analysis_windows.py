@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 import re
 import shutil
+import threading
 from urllib.request import urlopen
 from zipfile import ZipFile
 from types import SimpleNamespace
-from PySide6.QtCore import QEvent, QSettings, Qt, Signal
+from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -60,6 +62,7 @@ from xrd_manager.services.candidate_search_service import (
 from xrd_manager.services.ccdc_service import CcdcService
 from xrd_manager.services.cod_online_service import CodOnlineService, formula_elements
 from xrd_manager.services.local_phase_cache import LocalPhaseCache
+from xrd_manager.services.match_pdf2_service import MatchPdf2Service
 from xrd_manager.services.materials_project_service import MaterialsProjectService
 from xrd_manager.services.rruff_service import RRUFF_POWDER_XY_PROCESSED_URL, RruffService
 from xrd_manager.ui.pattern_plot_helpers import (
@@ -357,6 +360,10 @@ class AnalysisWindow(QDialog):
                     return pattern
         return self.project.patterns[0] if self.project.patterns else None
 
+    def _active_wavelength(self) -> float:
+        pattern = self._active_pattern()
+        return float(getattr(pattern, "wavelength", None) or CU_KA1_WAVELENGTH)
+
     def _plot_widget(self, title: str = "", xrd_navigation: bool = False) -> pg.PlotWidget:
         plot = create_xrd_plot_widget()
         if title:
@@ -389,6 +396,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self.ccdc = CcdcService()
         self.local_phase_cache = LocalPhaseCache()
         self.rruff = RruffService(self.local_phase_cache.root / "rruff")
+        self.match_pdf2 = MatchPdf2Service(str(self.settings.value("match_pdf2/root", "", type=str) or "") or None)
         self.materials_project = MaterialsProjectService(
             str(self.settings.value("materials_project/api_key", "", type=str) or "")
         )
@@ -399,8 +407,10 @@ class PhaseFinderWindow(AnalysisWindow):
             self.cod_online,
             self.ccdc,
             self.rruff,
+            self.match_pdf2,
             self.materials_project,
         )
+        self._start_match_pdf2_preload()
         self.finder_action_bar: FinderActionBar | None = None
         self.search_input: QLineEdit | None = None
         self.name_input: QLineEdit | None = None
@@ -411,6 +421,9 @@ class PhaseFinderWindow(AnalysisWindow):
         self.compound_card: CompoundCardWidget | None = None
         self.inorganics_checkbox: QCheckBox | None = None
         self.organics_checkbox: QCheckBox | None = None
+        self.structural_data_checkbox: QCheckBox | None = None
+        self.reference_patterns_checkbox: QCheckBox | None = None
+        self.rank_by_probability_checkbox: QCheckBox | None = None
         self.plot_layers: dict[str, list] = {
             "observed": [],
             "calculated_profile": [],
@@ -446,10 +459,18 @@ class PhaseFinderWindow(AnalysisWindow):
         self.match_alignment_scores: dict[str, str] = {}
         self.preprocessed_observed_data: np.ndarray | None = None
         self.preprocessing_background_removed = False
+        self._observed_probability_cache: tuple[tuple[object, ...], np.ndarray, np.ndarray, list[tuple[float, float]]] | None = None
+        self._candidate_peak_cache: dict[tuple[str, float, float, float], list] = {}
+        self._candidate_probability_cache: dict[tuple[object, ...], float] = {}
         self.show_all_selected_patterns = False
         self.pattern_stack_offset_percent = 10
         self.observed_pattern_plot_context: dict[str, dict[str, float]] = {}
         self.match_plot_view_initialized = False
+        self._pending_candidate_row = -1
+        self._candidate_activation_timer = QTimer(self)
+        self._candidate_activation_timer.setSingleShot(True)
+        self._candidate_activation_timer.setInterval(120)
+        self._candidate_activation_timer.timeout.connect(self._activate_pending_candidate_row)
 
         self.finder_action_bar = FinderActionBar()
         self.finder_action_bar.smoothRequested.connect(self._smooth_active_pattern_plot)
@@ -484,7 +505,7 @@ class PhaseFinderWindow(AnalysisWindow):
 
         self.center_layout.addWidget(self.match_plot, 4)
         self.candidate_table = CandidateTableWidget(candidate_rows)
-        self.candidate_table.rowClicked.connect(self._on_candidate_row_clicked)
+        self.candidate_table.rowActivated.connect(self._queue_candidate_row_activation)
         self.candidate_table.addRequested.connect(self._add_selected_candidate_to_match_list)
         self.candidate_table.contextRequested.connect(self._show_candidate_context_menu)
         self.match_table = SelectedCandidatesTableWidget()
@@ -509,6 +530,10 @@ class PhaseFinderWindow(AnalysisWindow):
         self.right_tabs.setCornerWidget(help_button, Qt.Corner.TopRightCorner)
         self._apply_default_phase_filter()
 
+    def closeEvent(self, event) -> None:
+        self.candidate_search_service.shutdown_background_downloads()
+        super().closeEvent(event)
+
     def _smooth_active_pattern_plot(self) -> None:
         data = self._active_observed_data()
         if data is None:
@@ -532,6 +557,7 @@ class PhaseFinderWindow(AnalysisWindow):
     def _reset_observed_preprocessing(self) -> None:
         self.preprocessed_observed_data = None
         self.preprocessing_background_removed = False
+        self._clear_probability_caches()
         self._refresh_observed_pattern_plot()
         self._rerun_active_calculation()
 
@@ -544,6 +570,7 @@ class PhaseFinderWindow(AnalysisWindow):
     ) -> None:
         self.preprocessed_observed_data = np.column_stack([x, y])
         self.preprocessing_background_removed = background_removed
+        self._clear_probability_caches()
         self._replace_observed_curve(x, y, name)
         self._rerun_active_calculation()
 
@@ -576,6 +603,7 @@ class PhaseFinderWindow(AnalysisWindow):
     def _on_project_tree_selection_changed(self) -> None:
         if not hasattr(self, "match_plot"):
             return
+        self._clear_probability_caches()
         view_range = self._plot_view_range() if self.show_all_selected_patterns else None
         try:
             self._refresh_observed_pattern_plot()
@@ -888,6 +916,24 @@ class PhaseFinderWindow(AnalysisWindow):
         material_row.addWidget(self.organics_checkbox)
         material_row.addStretch(1)
         outer_layout.addLayout(material_row)
+        data_mode_row = QHBoxLayout()
+        self.structural_data_checkbox = QCheckBox("Structural data")
+        self.structural_data_checkbox.setChecked(True)
+        self.structural_data_checkbox.setToolTip("Include sources with CIF or atomic coordinates that can be calculated.")
+        self.structural_data_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
+        self.reference_patterns_checkbox = QCheckBox("Experimental/reference patterns")
+        self.reference_patterns_checkbox.setChecked(True)
+        self.reference_patterns_checkbox.setToolTip("Include RRUFF and PDF-2 diffraction-line cards as reference overlays.")
+        self.reference_patterns_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
+        self.rank_by_probability_checkbox = QCheckBox("Rank by peak match")
+        self.rank_by_probability_checkbox.setChecked(True)
+        self.rank_by_probability_checkbox.setToolTip("Estimate whether locally available structural candidates have peaks present in the active XRD pattern.")
+        self.rank_by_probability_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
+        data_mode_row.addWidget(self.structural_data_checkbox)
+        data_mode_row.addWidget(self.reference_patterns_checkbox)
+        data_mode_row.addWidget(self.rank_by_probability_checkbox)
+        data_mode_row.addStretch(1)
+        outer_layout.addLayout(data_mode_row)
         actions = QHBoxLayout()
         search_button = QPushButton("Find")
         search_button.setMinimumHeight(34)
@@ -938,8 +984,19 @@ class PhaseFinderWindow(AnalysisWindow):
             ),
         )
 
-    def _on_candidate_row_clicked(self, row: int) -> None:
+    def _queue_candidate_row_activation(self, row: int) -> None:
+        self._pending_candidate_row = row
+        self._candidate_activation_timer.start()
+
+    def _activate_pending_candidate_row(self) -> None:
+        row = self._pending_candidate_row
+        self._pending_candidate_row = -1
+        self._on_candidate_row_activated(row)
+
+    def _on_candidate_row_activated(self, row: int) -> None:
         candidate = self._candidate_row_values(row)
+        if not candidate:
+            return
         self._enrich_candidate_with_structure_info(candidate)
         self._refresh_candidate_table_row(row, candidate)
         self.candidate_table.set_iic(row, candidate.get("I/Ic*", ""))
@@ -951,6 +1008,9 @@ class PhaseFinderWindow(AnalysisWindow):
             self.compound_card.set_candidate(candidate)
 
     def _enrich_candidate_with_structure_info(self, candidate: dict[str, str]) -> None:
+        if self._candidate_source(candidate) == "PDF2" and candidate.get("Entry"):
+            self._enrich_candidate_with_pdf2_info(candidate)
+            return
         if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"} or not candidate.get("Entry"):
             return
         try:
@@ -965,6 +1025,9 @@ class PhaseFinderWindow(AnalysisWindow):
         iic = self._estimate_structure_corundum_iic(structure)
         if iic > 0:
             candidate["I/Ic*"] = f"{iic:.3g}"
+        probability = self._structure_peak_probability(structure)
+        if probability > 0:
+            candidate["Prob."] = f"{probability:.0f}%"
         candidate["Space group"] = structure.space_group or structure.space_group_number or ""
         cell = structure.cell
         if all(getattr(cell, name, None) is not None for name in ("a", "b", "c", "alpha", "beta", "gamma")):
@@ -972,14 +1035,16 @@ class PhaseFinderWindow(AnalysisWindow):
                 f"a {cell.a:.4g}   b {cell.b:.4g}   c {cell.c:.4g}\n"
                 f"alpha {cell.alpha:.4g}   beta {cell.beta:.4g}   gamma {cell.gamma:.4g}"
             )
+            candidate["Crystal system"] = self._crystal_system_from_cell(cell)
         atoms = []
         atom_rows = []
-        for atom in (structure.atoms or [])[:12]:
+        for atom in (structure.atoms or [])[:48]:
             coords = []
             for value in (atom.x, atom.y, atom.z):
                 coords.append(f"{value:.4g}" if value is not None else "?")
             occ = f", occ={atom.occupancy:.3g}" if atom.occupancy is not None else ""
             atoms.append(f"{atom.label or atom.element} {atom.element} ({', '.join(coords)}{occ})")
+            b_value = atom.biso if atom.biso is not None else atom.uiso
             atom_rows.append([
                 atom.label or atom.element,
                 atom.element,
@@ -987,11 +1052,15 @@ class PhaseFinderWindow(AnalysisWindow):
                 coords[1],
                 coords[2],
                 f"{atom.occupancy:.3g}" if atom.occupancy is not None else "",
+                f"{b_value:.3g}" if b_value is not None else "",
             ])
         if atoms:
-            suffix = "" if len(structure.atoms) <= 12 else f"\n... +{len(structure.atoms) - 12} atoms"
+            suffix = "" if len(structure.atoms) <= 48 else f"\n... +{len(structure.atoms) - 48} atoms"
             candidate["Atoms"] = "\n".join(atoms) + suffix
             candidate["_AtomRows"] = atom_rows
+        diffraction_rows = self._diffraction_rows_for_structure(structure)
+        if diffraction_rows:
+            candidate["_DiffractionRows"] = diffraction_rows
         publication = str(structure.metadata.get("publication", "") or "")
         if publication:
             candidate["Notes"] = publication
@@ -999,12 +1068,126 @@ class PhaseFinderWindow(AnalysisWindow):
         if doi:
             candidate["DOI"] = doi
 
+    def _crystal_system_from_cell(self, cell: CellParameters) -> str:
+        lengths = [cell.a, cell.b, cell.c]
+        angles = [cell.alpha, cell.beta, cell.gamma]
+        if any(value is None for value in lengths + angles):
+            return ""
+        a, b, c = (float(value) for value in lengths)
+        alpha, beta, gamma = (float(value) for value in angles)
+
+        def close(left: float, right: float, tolerance: float = 0.03) -> bool:
+            return abs(left - right) <= tolerance
+
+        def angle90(value: float) -> bool:
+            return abs(value - 90.0) <= 0.2
+
+        if all(angle90(value) for value in (alpha, beta, gamma)):
+            if close(a, b) and close(b, c):
+                return "cubic"
+            if close(a, b):
+                return "tetragonal"
+            return "orthorhombic"
+        if angle90(alpha) and angle90(beta) and abs(gamma - 120.0) <= 0.3 and close(a, b):
+            return "hexagonal/trigonal"
+        if sum(angle90(value) for value in (alpha, beta, gamma)) == 2:
+            return "monoclinic"
+        return "triclinic"
+
+    def _enrich_candidate_with_pdf2_info(self, candidate: dict[str, str]) -> None:
+        details = self.match_pdf2.card_details(candidate.get("Entry", ""))
+        if details.get("space_group"):
+            candidate["Space group"] = str(details.get("space_group", ""))
+        if details.get("space_group_number"):
+            candidate["Space group"] = " ".join(
+                part for part in [candidate.get("Space group", ""), str(details.get("space_group_number", ""))] if part
+            )
+        cell_details = details.get("cell")
+        if isinstance(cell_details, dict):
+            cell = CellParameters(
+                a=cell_details.get("a"),
+                b=cell_details.get("b"),
+                c=cell_details.get("c"),
+                alpha=cell_details.get("alpha"),
+                beta=cell_details.get("beta"),
+                gamma=cell_details.get("gamma"),
+                volume=cell_details.get("volume"),
+            )
+            if all(getattr(cell, name, None) is not None for name in ("a", "b", "c", "alpha", "beta", "gamma")):
+                candidate["Cell"] = (
+                    f"a {cell.a:.4g}   b {cell.b:.4g}   c {cell.c:.4g}\n"
+                    f"alpha {cell.alpha:.4g}   beta {cell.beta:.4g}   gamma {cell.gamma:.4g}"
+                )
+                candidate["Crystal system"] = self._crystal_system_from_cell(cell)
+        peaks = self._pdf2_peaks_for_candidate(candidate)
+        if not peaks:
+            return
+        rows = []
+        for peak in peaks[:80]:
+            rows.append([
+                f"{getattr(peak, 'd_spacing', 0.0):.5g}",
+                f"{getattr(peak, 'two_theta', 0.0):.5g}",
+                f"{getattr(peak, 'intensity', 0.0):.3g}",
+                str(getattr(peak, "h", "") or ""),
+                str(getattr(peak, "k", "") or ""),
+                str(getattr(peak, "l", "") or ""),
+                "",
+            ])
+        candidate["_DiffractionRows"] = rows
+
+    def _pdf2_peaks_for_candidate(self, candidate: dict[str, str]):
+        wavelength = self._active_wavelength()
+        peaks = []
+        for peak in self.match_pdf2.diffraction_peaks(candidate.get("Entry", "")):
+            ratio = wavelength / (2.0 * peak.d_spacing)
+            if ratio <= 0.0 or ratio > 1.0:
+                continue
+            two_theta = math.degrees(2.0 * math.asin(ratio))
+            peaks.append(
+                SimpleNamespace(
+                    two_theta=two_theta,
+                    reference_two_theta=two_theta,
+                    d_spacing=peak.d_spacing,
+                    intensity=peak.intensity,
+                    h=peak.h,
+                    k=peak.k,
+                    l=peak.l,
+                )
+            )
+        return peaks
+
+    def _diffraction_rows_for_structure(self, structure) -> list[list[str]]:
+        try:
+            peaks = self.calculated_pattern_service.calculate_sticks(
+                structure,
+                wavelength=self._active_wavelength(),
+                two_theta_min=5.0,
+                two_theta_max=120.0,
+                intensity_min=0.5,
+            )
+        except Exception:
+            return []
+        peaks = sorted(peaks, key=lambda peak: peak.two_theta)[:60]
+        return [
+            [
+                f"{peak.d:.4f}",
+                f"{peak.two_theta:.3f}",
+                f"{peak.intensity:.1f}",
+                str(peak.h),
+                str(peak.k),
+                str(peak.l),
+                str(peak.multiplicity),
+            ]
+            for peak in peaks
+        ]
+
     def _refresh_candidate_table_row(self, row: int, candidate: dict[str, str]) -> None:
         if row < 0 or row >= self.candidate_table.rowCount():
             return
         for header, value in {
             "Formula": candidate.get("Formula", ""),
             "Phase": candidate.get("Phase", ""),
+            "Prob.": candidate.get("Prob.", ""),
             "I/Ic*": candidate.get("I/Ic*", ""),
         }.items():
             column = -1
@@ -1263,6 +1446,9 @@ class PhaseFinderWindow(AnalysisWindow):
         if self._candidate_source(candidate) == "RRUFF" and candidate.get("Entry"):
             self._preview_rruff_reference(candidate, show_errors=False)
             return
+        if self._candidate_source(candidate) == "PDF2" and candidate.get("Entry"):
+            self._preview_pdf2_reference(candidate, show_errors=False)
+            return
         if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"} or not candidate.get("Entry"):
             return
         self._calculate_candidate_overlay(candidate, show_errors=False)
@@ -1276,11 +1462,17 @@ class PhaseFinderWindow(AnalysisWindow):
     def _candidate_cif_path(self, candidate: dict[str, str]) -> Path:
         source = self._candidate_source(candidate)
         entry_id = candidate.get("Entry", "")
-        if source in {"COD", "USER", "CCDC"} and entry_id:
+        if source in {"USER", "CCDC"} and entry_id:
             cached_path = self.local_phase_cache.cif_path(source, entry_id)
             if cached_path is not None:
                 return cached_path
             raise ValueError("CIF is not in the user phase library. Save or import it first.")
+        if source == "COD" and entry_id:
+            cached_path = self.local_phase_cache.cif_path("COD", entry_id)
+            if cached_path is not None:
+                return cached_path
+            entry = self._candidate_to_cod_entry(candidate)
+            return self.local_phase_cache.download_cod_entry(entry, self.cod_online)
         if source == "MP" and entry_id:
             cached_path = self.local_phase_cache.cif_path("MP", entry_id)
             if cached_path is not None:
@@ -1290,6 +1482,22 @@ class PhaseFinderWindow(AnalysisWindow):
             self.local_phase_cache.index_cif(cif_path, source="MP", entry_id=entry_id)
             return cif_path
         raise ValueError("Select a saved COD, CCDC, USER, or Materials Project row with an entry id.")
+
+    def _candidate_local_cif_path(self, candidate: dict[str, str]) -> Path | None:
+        source = self._candidate_source(candidate)
+        entry_id = candidate.get("Entry", "")
+        if not entry_id:
+            return None
+        if source == "USER":
+            phase = next((item for item in self.project.phases if item.id == entry_id), None)
+            if phase is not None and phase.source_path:
+                path = Path(phase.source_path)
+                if path.exists():
+                    return path
+            return self.local_phase_cache.cif_path("USER", entry_id)
+        if source in {"COD", "CCDC", "MP"}:
+            return self.local_phase_cache.cif_path(source, entry_id)
+        return None
 
     def _add_selected_cif_to_project(self) -> None:
         candidate = self._selected_candidate_row()
@@ -1314,6 +1522,9 @@ class PhaseFinderWindow(AnalysisWindow):
         if self._candidate_source(candidate) == "RRUFF":
             self._preview_rruff_reference(candidate, show_errors=True)
             return
+        if self._candidate_source(candidate) == "PDF2":
+            self._preview_pdf2_reference(candidate, show_errors=True)
+            return
         self._calculate_candidate_overlay(candidate, show_errors=True)
 
     def _download_selected_candidate_to_cache(self) -> None:
@@ -1322,7 +1533,7 @@ class PhaseFinderWindow(AnalysisWindow):
             QMessageBox.information(self, "Download CIF", "Select a COD or Materials Project row first.")
             return
         source = self._candidate_source(candidate)
-        if source in {"COD", "USER", "CCDC"}:
+        if source in {"USER", "CCDC"}:
             QMessageBox.information(self, "Download CIF", "This CIF is already in the user phase library.")
             return
         if source not in {"COD", "MP"} or not candidate.get("Entry"):
@@ -1330,9 +1541,13 @@ class PhaseFinderWindow(AnalysisWindow):
             return
         try:
             if source == "COD":
-                entry = self._candidate_to_cod_entry(candidate)
-                cif_path = self.local_phase_cache.download_cod_entry(entry, self.cod_online)
-                saved_id = entry.cod_id
+                saved_id = candidate.get("Entry", "")
+                cached_path = self.local_phase_cache.cif_path("COD", saved_id)
+                if cached_path is not None:
+                    cif_path = cached_path
+                else:
+                    entry = self._candidate_to_cod_entry(candidate)
+                    cif_path = self.local_phase_cache.download_cod_entry(entry, self.cod_online)
             else:
                 saved_id = candidate.get("Entry", "")
                 target_dir = self.local_phase_cache.root / "materials_project_cif"
@@ -1391,6 +1606,14 @@ class PhaseFinderWindow(AnalysisWindow):
                 self,
                 "RRUFF reference",
                 "RRUFF entries are measured reference patterns. They can be previewed as overlays, but not used as calculated CIF phases.",
+            )
+            return
+        if self._candidate_source(candidate) == "PDF2":
+            self._preview_pdf2_reference(candidate, show_errors=True)
+            QMessageBox.information(
+                self,
+                "PDF-2 reference",
+                "PDF-2 entries are reference cards. They can be previewed as peak overlays, but not used as calculated CIF phases.",
             )
             return
         if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"} or not candidate.get("Entry"):
@@ -1706,6 +1929,23 @@ class PhaseFinderWindow(AnalysisWindow):
             peak_indices = peak_indices[keep]
         return np.sort(np.asarray(x, dtype=float)[peak_indices])
 
+    def _observed_peak_records(self, x, corrected_y, limit: int = 24) -> list[tuple[float, float]]:
+        y = np.asarray(corrected_y, dtype=float)
+        x_values = np.asarray(x, dtype=float)
+        if len(y) < 5 or float(np.nanmax(y)) <= 0:
+            return []
+        prominence = max(float(np.nanmax(y)) * 0.025, float(np.nanstd(y)) * 2.5, 1.0)
+        peak_indices, _properties = find_peaks(y, prominence=prominence, distance=max(5, len(y) // 800))
+        if len(peak_indices) == 0:
+            return []
+        records = [
+            (float(x_values[index]), max(float(y[index]), 0.0))
+            for index in peak_indices
+            if np.isfinite(x_values[index]) and np.isfinite(y[index]) and y[index] > 0
+        ]
+        records.sort(key=lambda item: item[1], reverse=True)
+        return records[:limit]
+
     def _profile_fit_quality(self, observed_y: np.ndarray, background: np.ndarray, calculated_total: np.ndarray) -> float:
         observed_corrected = np.clip(np.asarray(observed_y, dtype=float) - np.asarray(background, dtype=float), 0.0, None)
         calculated_corrected = np.clip(np.asarray(calculated_total, dtype=float) - np.asarray(background, dtype=float), 0.0, None)
@@ -1981,6 +2221,216 @@ class PhaseFinderWindow(AnalysisWindow):
             status=f"{status} shift-only",
         )
 
+    def _peak_probability_from_alignment(self, alignment: PhaseAlignmentEstimate) -> float:
+        if alignment.total_peaks <= 0:
+            return 0.0
+        matched_fraction = alignment.matched_peaks / max(alignment.total_peaks, 1)
+        residual_penalty = 1.0
+        if alignment.score > 0:
+            residual_penalty = max(0.15, 1.0 - min(alignment.score / 0.45, 1.0))
+        enough_peaks_factor = min(alignment.matched_peaks / 8.0, 1.0)
+        return float(np.clip(100.0 * matched_fraction * residual_penalty * enough_peaks_factor, 0.0, 100.0))
+
+    def _peak_presence_probability(self, peaks, observed_x: np.ndarray, corrected_y: np.ndarray, structure) -> float:
+        observed_records = self._observed_peak_records(observed_x, corrected_y, limit=24)
+        if not observed_records or not peaks:
+            return 0.0
+        observed_positions = np.asarray([position for position, _height in observed_records], dtype=float)
+        strong_calc = [
+            peak for peak in peaks
+            if getattr(peak, "intensity", 0.0) >= 2.0 and 5.0 <= getattr(peak, "two_theta", 0.0) <= 120.0
+        ]
+        strong_calc = sorted(strong_calc, key=lambda peak: float(getattr(peak, "intensity", 0.0)), reverse=True)[:45]
+        if not strong_calc:
+            return 0.0
+        alignment = self._estimate_phase_alignment(strong_calc, observed_positions, structure)
+        zero_shift = alignment.zero_shift if alignment.matched_peaks >= 3 else 0.0
+        calc_positions = np.asarray([float(peak.two_theta) + zero_shift for peak in strong_calc], dtype=float)
+        calc_intensities = np.asarray([max(float(getattr(peak, "intensity", 0.0)), 1.0) for peak in strong_calc], dtype=float)
+
+        tolerance = 0.42
+        observed_weighted = 0.0
+        observed_total = 0.0
+        observed_matches = 0
+        for obs_position, obs_height in observed_records[:18]:
+            weight = max(obs_height, 1.0) ** 0.65
+            observed_total += weight
+            deltas = np.abs(calc_positions - obs_position)
+            nearest = float(np.min(deltas)) if len(deltas) else 999.0
+            if nearest <= tolerance:
+                quality = max(0.0, 1.0 - nearest / tolerance)
+                observed_weighted += weight * (0.45 + 0.55 * quality)
+                observed_matches += 1
+        observed_coverage = observed_weighted / observed_total if observed_total > 0 else 0.0
+
+        top_count = min(18, len(calc_positions))
+        calc_weighted = 0.0
+        calc_total = 0.0
+        for calc_position, calc_intensity in zip(calc_positions[:top_count], calc_intensities[:top_count]):
+            weight = max(calc_intensity, 1.0) ** 0.55
+            calc_total += weight
+            deltas = np.abs(observed_positions - calc_position)
+            nearest = float(np.min(deltas)) if len(deltas) else 999.0
+            if nearest <= tolerance:
+                quality = max(0.0, 1.0 - nearest / tolerance)
+                calc_weighted += weight * (0.45 + 0.55 * quality)
+        calc_coverage = calc_weighted / calc_total if calc_total > 0 else 0.0
+
+        signature_bonus = min(calc_coverage / 0.45, 1.0) if calc_coverage > 0 else 0.0
+        probability = 100.0 * (0.20 * observed_coverage + 0.68 * calc_coverage + 0.12 * signature_bonus)
+        top_calc_matches = 0
+        for calc_position in calc_positions[:min(8, len(calc_positions))]:
+            deltas = np.abs(observed_positions - calc_position)
+            if len(deltas) and float(np.min(deltas)) <= tolerance:
+                top_calc_matches += 1
+        if top_calc_matches < 1:
+            probability = min(probability, 25.0)
+        elif top_calc_matches < 2:
+            probability = min(probability, 55.0)
+        if alignment.score > 0.22:
+            probability *= max(0.75, 1.0 - min((alignment.score - 0.22) / 0.5, 0.25))
+        return float(np.clip(probability, 0.0, 100.0))
+
+    def _clear_probability_caches(self) -> None:
+        self._observed_probability_cache = None
+        self._candidate_probability_cache.clear()
+
+    def _active_probability_context_key(self) -> tuple[object, ...]:
+        pattern = self._active_pattern()
+        pattern_id = getattr(pattern, "id", "") if pattern is not None else ""
+        source_path = getattr(pattern, "source_path", "") if pattern is not None else ""
+        wavelength = round(float(getattr(pattern, "wavelength", None) or CU_KA1_WAVELENGTH), 6)
+        data_len = int(len(self.preprocessed_observed_data)) if self.preprocessed_observed_data is not None else -1
+        return (pattern_id, source_path, wavelength, self.preprocessing_background_removed, data_len)
+
+    def _probability_observed_data(self) -> tuple[np.ndarray, np.ndarray, list[tuple[float, float]]] | None:
+        observed = self._active_observed_data()
+        if observed is None or not len(observed):
+            return None
+        key = self._active_probability_context_key()
+        if self._observed_probability_cache is not None and self._observed_probability_cache[0] == key:
+            return self._observed_probability_cache[1], self._observed_probability_cache[2], self._observed_probability_cache[3]
+        try:
+            background = self._estimate_background(observed[:, 0], observed[:, 1])
+            corrected = np.clip(observed[:, 1] - background, 0.0, None)
+            records = self._observed_peak_records(observed[:, 0], corrected, limit=24)
+        except Exception:
+            return None
+        self._observed_probability_cache = (key, np.asarray(observed[:, 0], dtype=float), corrected, records)
+        return self._observed_probability_cache[1], self._observed_probability_cache[2], self._observed_probability_cache[3]
+
+    def _rank_candidate_rows_by_peak_probability(self, rows: list[list[str]]) -> list[list[str]]:
+        if not self._rank_by_peak_probability_enabled():
+            return rows
+        probability_data = self._probability_observed_data()
+        if probability_data is None:
+            return rows
+        observed_x, corrected, observed_records = probability_data
+        if not observed_records:
+            return rows
+
+        scored_rows = []
+        max_ranked_rows = 35
+        for index, row in enumerate(rows[:max_ranked_rows]):
+            scored_row = list(row)
+            probability = self._candidate_row_peak_probability(scored_row, observed_x, corrected)
+            if probability > 0:
+                scored_row[4] = f"{probability:.0f}%"
+            scored_rows.append((probability, index, scored_row))
+        for index, row in enumerate(rows[max_ranked_rows:], start=max_ranked_rows):
+            scored_rows.append((0.0, index, row))
+        if not any(score > 0 for score, _index, _row in scored_rows):
+            return [row for _score, _index, row in scored_rows]
+        scored_rows.sort(key=lambda item: (-item[0], item[1]))
+        return [row for _score, _index, row in scored_rows]
+
+    def _candidate_row_peak_probability(self, row: list[str], observed_x: np.ndarray, corrected_y: np.ndarray) -> float:
+        candidate = {
+            "Source": row[0] if len(row) > 0 else "",
+            "Entry": row[1] if len(row) > 1 else "",
+            "Formula": row[2] if len(row) > 2 else "",
+            "Phase": row[3] if len(row) > 3 else "",
+        }
+        if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"}:
+            return 0.0
+        cif_path = self._candidate_local_cif_path(candidate)
+        if cif_path is None:
+            return 0.0
+        probability_key = self._candidate_probability_key(candidate, cif_path)
+        cached_probability = self._candidate_probability_cache.get(probability_key)
+        if cached_probability is not None:
+            return cached_probability
+        try:
+            _phase, structure = create_phase_from_cif(cif_path)
+            if candidate.get("Phase"):
+                structure.name = candidate["Phase"]
+            structure.wavelength = self._active_wavelength()
+            peaks = self._candidate_cached_peaks(cif_path, structure)
+            probability = self._peak_presence_probability(peaks, observed_x, corrected_y, structure)
+            self._candidate_probability_cache[probability_key] = probability
+            return probability
+        except Exception:
+            return 0.0
+
+    def _candidate_probability_key(self, candidate: dict[str, str], cif_path: Path) -> tuple[object, ...]:
+        try:
+            stat = cif_path.stat()
+            file_key = (str(cif_path), int(stat.st_mtime), int(stat.st_size))
+        except Exception:
+            file_key = (str(cif_path), 0, 0)
+        return (
+            self._active_probability_context_key(),
+            self._candidate_source(candidate),
+            candidate.get("Entry", ""),
+            file_key,
+        )
+
+    def _candidate_cached_peaks(self, cif_path: Path, structure) -> list:
+        try:
+            stat = cif_path.stat()
+            file_key = (str(cif_path), int(stat.st_mtime), int(stat.st_size))
+        except Exception:
+            file_key = (str(cif_path), 0, 0)
+        wavelength = round(float(self._active_wavelength()), 6)
+        cache_key = (file_key[0], wavelength, float(file_key[1]), float(file_key[2]))
+        cached = self._candidate_peak_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        peaks = self.calculated_pattern_service.calculate_sticks(
+            structure,
+            wavelength=self._active_wavelength(),
+            two_theta_min=5.0,
+            two_theta_max=120.0,
+            intensity_min=0.5,
+        )
+        if len(self._candidate_peak_cache) > 256:
+            self._candidate_peak_cache.clear()
+        self._candidate_peak_cache[cache_key] = peaks
+        return peaks
+
+    def _rank_by_peak_probability_enabled(self) -> bool:
+        return self.rank_by_probability_checkbox is not None and self.rank_by_probability_checkbox.isChecked()
+
+    def _structure_peak_probability(self, structure) -> float:
+        probability_data = self._probability_observed_data()
+        if probability_data is None:
+            return 0.0
+        observed_x, corrected, observed_records = probability_data
+        if not observed_records:
+            return 0.0
+        try:
+            structure.wavelength = self._active_wavelength()
+            peaks = self.calculated_pattern_service.calculate_sticks(
+                structure,
+                wavelength=self._active_wavelength(),
+                two_theta_min=5.0,
+                two_theta_max=120.0,
+                intensity_min=0.5,
+            )
+            return self._peak_presence_probability(peaks, observed_x, corrected, structure)
+        except Exception:
+            return 0.0
+
     def _shift_overlay_peaks(self, peaks, zero_shift: float):
         return [replace(peak, two_theta=float(peak.two_theta) + zero_shift) for peak in peaks]
 
@@ -2174,6 +2624,64 @@ class PhaseFinderWindow(AnalysisWindow):
             if show_errors:
                 QMessageBox.warning(self, "RRUFF preview failed", str(exc))
 
+    def _preview_pdf2_reference(self, candidate: dict[str, str], show_errors: bool) -> None:
+        entry_id = candidate.get("Entry", "")
+        if not entry_id:
+            return
+        view_range = self._plot_view_range()
+        try:
+            peaks = self._pdf2_peaks_for_candidate(candidate)
+            if not peaks:
+                raise ValueError("PDF-2 diffraction lines were not found for this card.")
+            observed = self._active_observed_data()
+            if observed is not None and len(observed):
+                x_grid = np.asarray(observed[:, 0], dtype=float)
+                active_plot_context = self._active_pattern_plot_context()
+                active_plot_offset = float(active_plot_context.get("offset", 0.0))
+                baseline_value = float(np.nanmin(observed[:, 1])) + active_plot_offset
+                top_value = float(np.nanmax(observed[:, 1])) + active_plot_offset
+                height = max(top_value - baseline_value, float(active_plot_context.get("height", 0.0)), 1.0)
+            else:
+                x_grid = np.linspace(5.0, 120.0, 5000)
+                baseline_value = 0.0
+                height = 100.0
+            self._clear_preview_overlay()
+            baseline = np.full_like(x_grid, baseline_value, dtype=float)
+            label = self._phase_legend_label(candidate)
+            stick_item = plot_peak_intensity_sticks(
+                self.match_plot,
+                peaks,
+                "#1a73e8",
+                x_grid,
+                baseline,
+                height,
+                f"PDF-2 reference {label}",
+                width=3.0,
+            )
+            self.plot_layers["preview_peak_positions"].append(stick_item)
+            hkl_peaks = [peak for peak in peaks if getattr(peak, "h", "") or getattr(peak, "k", "") or getattr(peak, "l", "")]
+            if self.show_hkl_labels and hkl_peaks:
+                hkl_items = add_hkl_labels(
+                    self.match_plot,
+                    hkl_peaks,
+                    "#1a73e8",
+                    baseline_value,
+                    height,
+                    limit=18,
+                    above_peaks=True,
+                )
+                self.plot_layers["preview_hkl"].extend(hkl_items)
+            self.match_plot.setTitle(
+                f"PDF-2 peak preview for {label} ({len(peaks)} lines)",
+                color="#111111",
+                size="13pt",
+            )
+            self._restore_plot_view_range(view_range)
+            self.active_overlay_entry_id = entry_id
+        except Exception as exc:
+            if show_errors:
+                QMessageBox.warning(self, "PDF-2 preview failed", str(exc))
+
     def _calculate_structure_overlay(self, structure, preview: bool = False) -> None:
         if preview:
             self._clear_preview_overlay()
@@ -2323,6 +2831,7 @@ class PhaseFinderWindow(AnalysisWindow):
         mp_status = self.materials_project.status()
         ccdc_status = self.ccdc.status()
         rruff_row = self.rruff.status_row()
+        match_pdf2_row = self._match_pdf2_status_row()
         rows = [
             self._database_summary_row(self._user_phase_library_status_row()),
             [
@@ -2338,6 +2847,7 @@ class PhaseFinderWindow(AnalysisWindow):
                 str(self.local_phase_cache.root),
             ],
             self._database_summary_row(rruff_row),
+            match_pdf2_row,
             [
                 "CCDC / CSD",
                 "yes" if ccdc_status.configured else "not configured",
@@ -2358,6 +2868,9 @@ class PhaseFinderWindow(AnalysisWindow):
             "sources/cod_local": bool(self.settings.value("sources/cod_local", True, type=bool)),
             "sources/cod_online": bool(self.settings.value("sources/cod_online", True, type=bool)),
             "sources/rruff": bool(self.settings.value("sources/rruff", False, type=bool)),
+            "sources/match_pdf2": bool(
+                self.settings.value("sources/match_pdf2", self.match_pdf2.is_configured(), type=bool)
+            ),
         }
         self.database_panel = DatabasePanelWidget(
             rows,
@@ -2370,11 +2883,17 @@ class PhaseFinderWindow(AnalysisWindow):
         self.database_panel.materialsProjectToggled.connect(self._set_materials_project_enabled)
         self.database_panel.saveMaterialsProjectRequested.connect(self._save_materials_project_settings)
         self.database_panel.rebuildUserIndexRequested.connect(self._build_local_phase_cache_index)
+        self.database_panel.clearUserLibraryRequested.connect(self._clear_user_phase_library)
         self.database_panel.indexCodFolderRequested.connect(self._index_cod_cif_folder)
         self.database_panel.indexCodZipRequested.connect(self._index_cod_zip_archive)
         self.database_panel.downloadCodArchiveRequested.connect(self._download_cod_archive_from_url)
-        self.database_panel.downloadRruffRequested.connect(self._download_rruff_database)
-        self.database_panel.indexRruffRequested.connect(self._index_rruff_database)
+        self.database_panel.clearCodRequested.connect(self._clear_cod_cache)
+        self.database_panel.updateRruffRequested.connect(self._update_rruff_database)
+        self.database_panel.clearRruffRequested.connect(self._clear_rruff_database)
+        self.database_panel.chooseMatchPdf2FolderRequested.connect(self._choose_match_pdf2_folder)
+        self.database_panel.refreshMatchPdf2Requested.connect(self._refresh_match_pdf2_database)
+        self.database_panel.clearMatchPdf2Requested.connect(self._clear_match_pdf2_database)
+        self.database_panel.clearMaterialsProjectRequested.connect(self._clear_materials_project_cache)
         return self.database_panel
 
     def _show_database_settings_tab(self) -> None:
@@ -2389,10 +2908,26 @@ class PhaseFinderWindow(AnalysisWindow):
         enabled_text = "enabled" if enabled else "disabled"
         return f"Materials Project: {status.label}; search {enabled_text}."
 
+    def _start_match_pdf2_preload(self) -> None:
+        if not self.match_pdf2.is_configured():
+            return
+        if not self._source_enabled("sources/match_pdf2", True):
+            return
+
+        def preload() -> None:
+            try:
+                self.match_pdf2.refresh()
+            except Exception:
+                pass
+
+        threading.Thread(target=preload, name="xrd-match-pdf2-preload", daemon=True).start()
+
     def _set_source_enabled(self, setting_key: str, checked: bool) -> None:
         self.settings.setValue(setting_key, checked)
         if self.database_panel is not None:
             self.database_panel.set_source_checked(setting_key, checked)
+        if setting_key == "sources/match_pdf2" and checked:
+            self._start_match_pdf2_preload()
 
     def _set_materials_project_enabled(self, checked: bool) -> None:
         self.settings.setValue("materials_project/enabled", checked)
@@ -2430,6 +2965,7 @@ class PhaseFinderWindow(AnalysisWindow):
         replacements = {
             "User phase library": self._database_summary_row(self._user_phase_library_status_row()),
             "RRUFF powder": self._database_summary_row(self.rruff.status_row()),
+            "PDF-2": self._match_pdf2_status_row(),
         }
         for source_name, values in replacements.items():
             self.database_panel.update_row(source_name, values)
@@ -2460,6 +2996,15 @@ class PhaseFinderWindow(AnalysisWindow):
             details = f"{label} ({suffix})" if label else suffix
         return [source, state, details, location]
 
+    def _match_pdf2_status_row(self) -> list[str]:
+        status = self.match_pdf2.status()
+        return [
+            "PDF-2",
+            "yes" if status.configured else "not configured",
+            status.label,
+            str(status.root),
+        ]
+
     def _build_local_phase_cache_index(self) -> None:
         try:
             count = self.local_phase_cache.build_index()
@@ -2468,6 +3013,30 @@ class PhaseFinderWindow(AnalysisWindow):
             return
         self._refresh_database_rows()
         QMessageBox.information(self, "Build local index", f"Indexed {count} saved CIF files.")
+
+    def _confirm_clear_database(self, title: str, database_name: str) -> bool:
+        response = QMessageBox.warning(
+            self,
+            title,
+            f"This will permanently delete local data for {database_name}.\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return response == QMessageBox.StandardButton.Yes
+
+    def _clear_user_phase_library(self) -> None:
+        if not self._confirm_clear_database("Clear user phase library", "the user phase library"):
+            return
+        try:
+            self.local_phase_cache.clear_user_library()
+            self.settings.setValue("sources/user_library", False)
+            if self.database_panel is not None:
+                self.database_panel.set_source_checked("sources/user_library", False)
+        except Exception as exc:
+            QMessageBox.warning(self, "Clear user phase library failed", str(exc))
+            return
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Clear user phase library", "User phase library cache was cleared.")
 
     def _index_cod_cif_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select COD CIF folder", str(Path.home()))
@@ -2530,6 +3099,20 @@ class PhaseFinderWindow(AnalysisWindow):
             self.unsetCursor()
         QMessageBox.information(self, "Download COD archive", f"Saved archive:\n{output_path}")
 
+    def _clear_cod_cache(self) -> None:
+        if not self._confirm_clear_database("Clear COD local/bulk", "COD local/bulk"):
+            return
+        try:
+            self.local_phase_cache.clear_cod_cache()
+            self.settings.setValue("sources/cod_local", False)
+            if self.database_panel is not None:
+                self.database_panel.set_source_checked("sources/cod_local", False)
+        except Exception as exc:
+            QMessageBox.warning(self, "Clear COD local/bulk failed", str(exc))
+            return
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Clear COD local/bulk", "COD local cache was cleared.")
+
     def _extract_and_index_cif_zip(self, archive_path: Path, target_root: Path, source: str) -> int:
         target_root.mkdir(parents=True, exist_ok=True)
         count = 0
@@ -2550,29 +3133,114 @@ class PhaseFinderWindow(AnalysisWindow):
                 count += 1
         return count
 
-    def _download_rruff_database(self) -> None:
+    def _update_rruff_database(self) -> None:
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            archive_path = self.rruff.download_powder_archive(RRUFF_POWDER_XY_PROCESSED_URL)
+            count = self.rruff.update_powder_database(RRUFF_POWDER_XY_PROCESSED_URL, remove_archive=True)
+            self.settings.setValue("sources/rruff", True)
+            if self.database_panel is not None:
+                self.database_panel.set_source_checked("sources/rruff", True)
         except Exception as exc:
-            QMessageBox.warning(self, "Download RRUFF failed", str(exc))
+            QMessageBox.warning(self, "Update RRUFF failed", str(exc))
             return
         finally:
             self.unsetCursor()
         self._refresh_database_rows()
-        QMessageBox.information(self, "Download RRUFF", f"Saved archive:\n{archive_path}")
+        QMessageBox.information(self, "Update RRUFF", f"Updated and indexed {count} RRUFF reference patterns.")
 
-    def _index_rruff_database(self) -> None:
+    def _clear_rruff_database(self) -> None:
+        if not self._confirm_clear_database("Clear RRUFF", "RRUFF"):
+            return
+        try:
+            self.rruff.clear()
+            self.settings.setValue("sources/rruff", False)
+            if self.database_panel is not None:
+                self.database_panel.set_source_checked("sources/rruff", False)
+        except Exception as exc:
+            QMessageBox.warning(self, "Clear RRUFF failed", str(exc))
+            return
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Clear RRUFF", "RRUFF local data was cleared and disabled for search.")
+
+    def _choose_match_pdf2_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select PDF-2 folder",
+            str(self.match_pdf2.root if self.match_pdf2.root.exists() else Path.home()),
+        )
+        if not folder:
+            return
+        selected_root = Path(folder)
+        if not (selected_root / "summary.dat").exists():
+            QMessageBox.warning(
+                self,
+                "Select PDF-2 folder",
+                "The selected folder does not contain summary.dat.\n\nSelect the PDF2-2004 folder from Match.",
+            )
+            return
+        self.match_pdf2.set_root(selected_root)
+        self.settings.setValue("match_pdf2/root", str(selected_root))
+        self.settings.setValue("sources/match_pdf2", True)
+        if self.database_panel is not None:
+            self.database_panel.set_source_checked("sources/match_pdf2", True)
+        self._refresh_database_rows()
+        self._start_match_pdf2_preload()
+        QMessageBox.information(self, "Select PDF-2 folder", f"PDF-2 library selected:\n{selected_root}")
+
+    def _refresh_match_pdf2_database(self) -> None:
+        if not self.match_pdf2.is_configured():
+            QMessageBox.warning(
+                self,
+                "Refresh PDF-2 failed",
+                "PDF-2 is not configured. Choose the folder that contains summary.dat first.",
+            )
+            return
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            count = self.rruff.index_powder_archive()
+            count = self.match_pdf2.refresh()
+            self.settings.setValue("sources/match_pdf2", True)
+            if self.database_panel is not None:
+                self.database_panel.set_source_checked("sources/match_pdf2", True)
         except Exception as exc:
-            QMessageBox.warning(self, "Index RRUFF failed", str(exc))
+            QMessageBox.warning(self, "Refresh PDF-2 failed", str(exc))
             return
         finally:
             self.unsetCursor()
         self._refresh_database_rows()
-        QMessageBox.information(self, "Index RRUFF", f"Indexed {count} RRUFF reference patterns.")
+        QMessageBox.information(self, "Refresh PDF-2", f"Loaded {count} PDF-2 cards.")
+
+    def _clear_match_pdf2_database(self) -> None:
+        response = QMessageBox.warning(
+            self,
+            "Clear PDF-2",
+            "This will clear the loaded PDF-2 card cache and disable it for search.\n\n"
+            "The installed Match files in Program Files will not be deleted.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        self.match_pdf2.clear()
+        self.settings.setValue("sources/match_pdf2", False)
+        if self.database_panel is not None:
+            self.database_panel.set_source_checked("sources/match_pdf2", False)
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Clear PDF-2", "PDF-2 was cleared from memory and disabled for search.")
+
+    def _clear_materials_project_cache(self) -> None:
+        if not self._confirm_clear_database("Clear Materials Project", "Materials Project cached structures"):
+            return
+        try:
+            self.local_phase_cache.clear_materials_project_cache()
+            self.settings.setValue("materials_project/enabled", False)
+            if self.database_panel is not None:
+                self.database_panel.set_materials_project_checked(False)
+                self.database_panel.set_materials_project_status(self._materials_project_status_text())
+        except Exception as exc:
+            QMessageBox.warning(self, "Clear Materials Project failed", str(exc))
+            return
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Clear Materials Project", "Materials Project local cache was cleared.")
 
     def _search_pdf2_text(self) -> None:
         query = self.search_input.text().strip() if self.search_input is not None else ""
@@ -2625,12 +3293,19 @@ class PhaseFinderWindow(AnalysisWindow):
             excluded_elements=self._excluded_elements(),
             cod_online_enabled=self._cod_online_enabled(),
             rruff_enabled=self._rruff_enabled(),
+            match_pdf2_enabled=self._match_pdf2_enabled(),
             materials_project_enabled=self._materials_project_enabled(),
+            structural_data_enabled=self._structural_data_enabled(),
+            reference_patterns_enabled=self._reference_patterns_enabled(),
             material_class_allowed=self._material_class_allowed,
         )
 
     def _materials_project_enabled(self) -> bool:
-        return bool(self.settings.value("materials_project/enabled", False, type=bool)) and self.materials_project.status().configured
+        return (
+            self._structural_data_enabled()
+            and bool(self.settings.value("materials_project/enabled", False, type=bool))
+            and self.materials_project.status().configured
+        )
 
     def _local_cache_sources(self) -> list[str]:
         sources = []
@@ -2643,10 +3318,19 @@ class PhaseFinderWindow(AnalysisWindow):
         return list(dict.fromkeys(sources))
 
     def _cod_online_enabled(self) -> bool:
-        return self._source_enabled("sources/cod_online", True)
+        return self._structural_data_enabled() and self._source_enabled("sources/cod_online", True)
 
     def _rruff_enabled(self) -> bool:
-        return self._source_enabled("sources/rruff", False)
+        return self._reference_patterns_enabled() and self._source_enabled("sources/rruff", False)
+
+    def _match_pdf2_enabled(self) -> bool:
+        return self._source_enabled("sources/match_pdf2", self.match_pdf2.is_configured()) and self.match_pdf2.is_configured()
+
+    def _structural_data_enabled(self) -> bool:
+        return self.structural_data_checkbox is None or self.structural_data_checkbox.isChecked()
+
+    def _reference_patterns_enabled(self) -> bool:
+        return self.reference_patterns_checkbox is None or self.reference_patterns_checkbox.isChecked()
 
     def _source_enabled(self, setting_key: str, default: bool) -> bool:
         return bool(self.settings.value(setting_key, default, type=bool))
@@ -2674,6 +3358,10 @@ class PhaseFinderWindow(AnalysisWindow):
             self.inorganics_checkbox.setChecked(True)
         if self.organics_checkbox is not None:
             self.organics_checkbox.setChecked(False)
+        if self.structural_data_checkbox is not None:
+            self.structural_data_checkbox.setChecked(True)
+        if self.reference_patterns_checkbox is not None:
+            self.reference_patterns_checkbox.setChecked(True)
         self._update_element_fields()
 
     def _toggle_required_element(self, element: str) -> None:
@@ -2803,6 +3491,8 @@ class PhaseFinderWindow(AnalysisWindow):
             self._search_pdf2_text()
 
     def _set_candidate_rows(self, rows: list[list[str]]) -> None:
+        rows = [normalize_candidate_row(row) for row in rows]
+        rows = self._rank_candidate_rows_by_peak_probability(rows)
         self.candidate_table.set_rows(rows, normalize_candidate_row)
         if rows:
             self._update_compound_card(self._candidate_row_values(0))

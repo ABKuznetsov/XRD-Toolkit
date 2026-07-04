@@ -13,11 +13,11 @@ from PySide6.QtWidgets import (
 
 
 class CandidateTableWidget(QTableWidget):
-    rowClicked = Signal(int)
+    rowActivated = Signal(int)
     addRequested = Signal()
     contextRequested = Signal(QPoint)
 
-    HEADERS = ["Source", "Entry", "Formula", "Phase", "I/Ic*"]
+    HEADERS = ["Source", "Entry", "Formula", "Phase", "Prob.", "I/Ic*"]
 
     def __init__(self, rows: list[list[str]], parent=None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
@@ -34,9 +34,12 @@ class CandidateTableWidget(QTableWidget):
         self.setAlternatingRowColors(True)
         self.setMinimumHeight(190)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._emit_context_request)
-        self.cellClicked.connect(self._emit_row_clicked)
+        self.cellClicked.connect(self._activate_clicked_row)
+        self.currentCellChanged.connect(self._emit_current_row_changed)
         self.cellDoubleClicked.connect(lambda _row, _column: self.addRequested.emit())
         self.set_rows(rows, lambda row: row)
         self.horizontalHeader().setToolTip(
@@ -53,8 +56,8 @@ class CandidateTableWidget(QTableWidget):
             normalized_row = normalize_row(row)
             for col_index, value in enumerate(normalized_row[: self.columnCount()]):
                 item = QTableWidgetItem(value)
-                if col_index == 0 and len(normalized_row) > 5:
-                    item.setData(Qt.ItemDataRole.UserRole, normalized_row[5])
+                if col_index == 0 and len(normalized_row) > 6:
+                    item.setData(Qt.ItemDataRole.UserRole, normalized_row[6])
                 self.setItem(row_index, col_index, item)
         self._resize_columns()
 
@@ -90,10 +93,30 @@ class CandidateTableWidget(QTableWidget):
         if item is not None:
             item.setText(value)
 
-    def _emit_row_clicked(self, row: int, _column: int) -> None:
+    def set_probability(self, row: int, value: str) -> None:
+        if not value or row < 0 or row >= self.rowCount():
+            return
+        column = self._column_index("Prob.")
+        if column < 0:
+            return
+        item = self.item(row, column)
+        if item is not None:
+            item.setText(value)
+
+    def _column_index(self, header: str) -> int:
+        for column in range(self.columnCount()):
+            item = self.horizontalHeaderItem(column)
+            if item is not None and item.text() == header:
+                return column
+        return -1
+
+    def _activate_clicked_row(self, row: int, _column: int) -> None:
         if row >= 0:
             self.selectRow(row)
-        self.rowClicked.emit(row)
+
+    def _emit_current_row_changed(self, current_row: int, _current_column: int, previous_row: int, _previous_column: int) -> None:
+        if current_row >= 0 and current_row != previous_row:
+            self.rowActivated.emit(current_row)
 
     def _emit_context_request(self, point: QPoint) -> None:
         row = self.rowAt(point.y())
@@ -103,7 +126,15 @@ class CandidateTableWidget(QTableWidget):
 
     def _resize_columns(self) -> None:
         self.resizeColumnsToContents()
-        self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header = self.horizontalHeader()
+        for column in range(self.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        self.setColumnWidth(0, max(self.columnWidth(0), 70))
+        self.setColumnWidth(1, max(self.columnWidth(1), 90))
+        self.setColumnWidth(2, max(self.columnWidth(2), 180))
+        self.setColumnWidth(3, max(self.columnWidth(3), 260))
+        self.setColumnWidth(4, max(self.columnWidth(4), 70))
+        self.setColumnWidth(5, max(self.columnWidth(5), 70))
 
 
 class SelectedCandidatesTableWidget(QTableWidget):
@@ -126,6 +157,8 @@ class SelectedCandidatesTableWidget(QTableWidget):
         self.setAlternatingRowColors(True)
         self.setMinimumHeight(190)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._emit_context_request)
         self.cellClicked.connect(self._emit_row_clicked)
@@ -160,4 +193,11 @@ class SelectedCandidatesTableWidget(QTableWidget):
 
     def _resize_columns(self) -> None:
         self.resizeColumnsToContents()
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header = self.horizontalHeader()
+        for column in range(self.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        self.setColumnWidth(0, max(self.columnWidth(0), 80))
+        self.setColumnWidth(1, max(self.columnWidth(1), 260))
+        self.setColumnWidth(2, max(self.columnWidth(2), 100))
+        self.setColumnWidth(3, max(self.columnWidth(3), 90))
+        self.setColumnWidth(4, max(self.columnWidth(4), 70))

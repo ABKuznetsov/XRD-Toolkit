@@ -66,6 +66,17 @@ class RruffService:
         tmp_path.replace(self.archive_path)
         return self.archive_path
 
+    def update_powder_database(
+        self,
+        url: str = RRUFF_POWDER_XY_PROCESSED_URL,
+        remove_archive: bool = True,
+    ) -> int:
+        self.download_powder_archive(url)
+        count = self.index_powder_archive()
+        if remove_archive and self.archive_path.exists():
+            self.archive_path.unlink()
+        return count
+
     def index_powder_archive(self) -> int:
         if not self.archive_path.exists():
             raise FileNotFoundError(f"RRUFF archive not found: {self.archive_path}")
@@ -92,6 +103,7 @@ class RruffService:
             return 0
         count = 0
         with self._connect() as connection:
+            connection.execute("delete from rruff_patterns")
             for path in self.powder_dir.rglob("*"):
                 if not path.is_file() or not self._looks_like_xy_file(path.name):
                     continue
@@ -101,6 +113,19 @@ class RruffService:
                 self._upsert(connection, entry)
                 count += 1
         return count
+
+    def clear(self) -> None:
+        if self.archive_path.exists():
+            self.archive_path.unlink()
+        if self.powder_dir.exists():
+            shutil.rmtree(self.powder_dir)
+        self._ensure_schema()
+        connection = self._connect()
+        try:
+            connection.execute("delete from rruff_patterns")
+            connection.commit()
+        finally:
+            connection.close()
 
     def search(
         self,
@@ -149,6 +174,16 @@ class RruffService:
                 "select path from rruff_patterns where rruff_id = ?",
                 (rruff_id,),
             ).fetchone()
+            if row is None:
+                row = connection.execute(
+                    """
+                    select path from rruff_patterns
+                    where rruff_id like ? or path like ?
+                    order by updated_at desc
+                    limit 1
+                    """,
+                    (f"{rruff_id}%", f"%{rruff_id}%"),
+                ).fetchone()
         if not row or not row["path"]:
             return None
         path = Path(row["path"])
@@ -185,8 +220,8 @@ class RruffService:
         return first.replace("_", " ").strip()
 
     def _rruff_id_from_path(self, path: Path) -> str:
-        match = re.search(r"\bR[0-9]{5,7}\b", path.name)
-        return match.group(0) if match else path.stem
+        match = re.search(r"(?:^|[^A-Za-z0-9])(R[0-9]{5,7}(?:-[0-9]+)?)(?=$|[^A-Za-z0-9])", path.name)
+        return match.group(1) if match else path.stem
 
     def _metadata_value(self, text: str, keys: list[str]) -> str:
         for key in keys:

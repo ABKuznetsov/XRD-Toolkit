@@ -16,6 +16,9 @@ __pycache__/
 
 *.log
 
+# Local developer launchers
+run_finder_sci.bat
+
 # Local databases, caches, and release artifacts
 xrd_manager_data/
 dist/
