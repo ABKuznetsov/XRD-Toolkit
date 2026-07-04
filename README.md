@@ -57,7 +57,7 @@ The Databases tab controls which sources participate in search and provides expl
 - Optional CCDC/CSD DOI/refcode lookup when the CCDC Python API is available
 - Optional Materials Project search with API key
 - Optional RRUFF measured powder-pattern overlays
-- Optional PDF-2 reference-card support from a local Match installation
+- Optional PDF-2 reference-card support 
 - Candidate ranking by estimated peak-match probability for locally available structures
 
 ## Visualization
