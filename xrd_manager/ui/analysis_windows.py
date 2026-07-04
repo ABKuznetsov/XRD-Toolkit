@@ -3,17 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import re
 import shutil
+from urllib.request import urlopen
+from zipfile import ZipFile
 from types import SimpleNamespace
-from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QAction, QFont, QMouseEvent
+from PySide6.QtCore import QEvent, QSettings, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QFont
 from PySide6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -38,6 +42,7 @@ from pathlib import Path
 
 from xrd_manager.core.pattern import Pattern
 from xrd_manager.core.project import Project
+from xrd_manager.core.structure import AtomSite, CellParameters, Structure
 from xrd_manager.finder import FinderCandidateInput, FinderInput, FinderService
 from xrd_manager.io.cif_loader import create_phase_from_cif
 from xrd_manager.io.xy_loader import load_xy
@@ -47,10 +52,16 @@ from xrd_manager.services.calculated_pattern_service import (
     calculated_profile_from_peaks,
     radiation_lines_from_wavelength,
 )
-from xrd_manager.services.ccdc_service import CcdcService, extract_doi
+from xrd_manager.services.candidate_search_service import (
+    CandidateSearchOptions,
+    CandidateSearchService,
+    normalize_candidate_row,
+)
+from xrd_manager.services.ccdc_service import CcdcService
 from xrd_manager.services.cod_online_service import CodOnlineService, formula_elements
 from xrd_manager.services.local_phase_cache import LocalPhaseCache
 from xrd_manager.services.materials_project_service import MaterialsProjectService
+from xrd_manager.services.rruff_service import RRUFF_POWDER_XY_PROCESSED_URL, RruffService
 from xrd_manager.ui.pattern_plot_helpers import (
     add_hkl_labels,
     calculate_profile_for_structure,
@@ -59,12 +70,40 @@ from xrd_manager.ui.pattern_plot_helpers import (
     estimate_profile_fwhm,
     plot_hkl_sticks,
     plot_hkl_ticks,
+    plot_peak_intensity_sticks,
     plot_phase_marker_lane,
     plot_profile,
     scale_profile_to_reference,
 )
+from xrd_manager.ui.candidate_tables import CandidateTableWidget, SelectedCandidatesTableWidget
+from xrd_manager.ui.compound_card import CompoundCardWidget
+from xrd_manager.ui.database_panel import DatabasePanelWidget
+from xrd_manager.ui.element_filter import PeriodicTableWidget, element_sort_key
+from xrd_manager.ui.finder_action_bar import FinderActionBar
 from xrd_manager.ui.project_tree import ProjectTree
 from xrd_manager.ui.xrd_plot import create_xrd_plot_widget
+
+
+ATOMIC_WEIGHTS = {
+    "H": 1.008, "D": 2.014, "C": 12.011, "N": 14.007, "O": 15.999, "F": 18.998,
+    "Na": 22.990, "Mg": 24.305, "Al": 26.982, "Si": 28.085, "P": 30.974, "S": 32.06,
+    "Cl": 35.45, "K": 39.098, "Ca": 40.078, "Ti": 47.867, "V": 50.942, "Cr": 51.996,
+    "Mn": 54.938, "Fe": 55.845, "Co": 58.933, "Ni": 58.693, "Cu": 63.546, "Zn": 65.38,
+    "Ga": 69.723, "Ge": 72.630, "As": 74.922, "Se": 78.971, "Br": 79.904, "Sr": 87.62,
+    "Y": 88.906, "Zr": 91.224, "Nb": 92.906, "Mo": 95.95, "Ag": 107.868, "Cd": 112.414,
+    "In": 114.818, "Sn": 118.710, "Sb": 121.760, "Te": 127.60, "I": 126.904, "Ba": 137.327,
+    "La": 138.905, "Ce": 140.116, "Pr": 140.908, "Nd": 144.242, "W": 183.84, "Pb": 207.2,
+    "Bi": 208.980,
+}
+
+ATOMIC_NUMBERS = {
+    "H": 1, "D": 1, "C": 6, "N": 7, "O": 8, "F": 9, "Na": 11, "Mg": 12, "Al": 13,
+    "Si": 14, "P": 15, "S": 16, "Cl": 17, "K": 19, "Ca": 20, "Ti": 22, "V": 23,
+    "Cr": 24, "Mn": 25, "Fe": 26, "Co": 27, "Ni": 28, "Cu": 29, "Zn": 30, "Ga": 31,
+    "Ge": 32, "As": 33, "Se": 34, "Br": 35, "Sr": 38, "Y": 39, "Zr": 40, "Nb": 41,
+    "Mo": 42, "Ag": 47, "Cd": 48, "In": 49, "Sn": 50, "Sb": 51, "Te": 52, "I": 53,
+    "Ba": 56, "La": 57, "Ce": 58, "Pr": 59, "Nd": 60, "W": 74, "Pb": 82, "Bi": 83,
+}
 
 
 @dataclass(slots=True)
@@ -76,96 +115,25 @@ class PhaseAlignmentEstimate:
     status: str = "unmatched"
 
 
-def _periodic_table_positions() -> list[tuple[str, int, int]]:
-    return [
-        ("H", 1, 1), ("He", 1, 18),
-        ("Li", 2, 1), ("Be", 2, 2),
-        ("B", 2, 13), ("C", 2, 14), ("N", 2, 15), ("O", 2, 16), ("F", 2, 17), ("Ne", 2, 18),
-        ("Na", 3, 1), ("Mg", 3, 2),
-        ("Al", 3, 13), ("Si", 3, 14), ("P", 3, 15), ("S", 3, 16), ("Cl", 3, 17), ("Ar", 3, 18),
-        ("K", 4, 1), ("Ca", 4, 2), ("Sc", 4, 3), ("Ti", 4, 4), ("V", 4, 5),
-        ("Cr", 4, 6), ("Mn", 4, 7), ("Fe", 4, 8), ("Co", 4, 9), ("Ni", 4, 10),
-        ("Cu", 4, 11), ("Zn", 4, 12), ("Ga", 4, 13), ("Ge", 4, 14), ("As", 4, 15),
-        ("Se", 4, 16), ("Br", 4, 17), ("Kr", 4, 18),
-        ("Rb", 5, 1), ("Sr", 5, 2), ("Y", 5, 3), ("Zr", 5, 4), ("Nb", 5, 5),
-        ("Mo", 5, 6), ("Tc", 5, 7), ("Ru", 5, 8), ("Rh", 5, 9), ("Pd", 5, 10),
-        ("Ag", 5, 11), ("Cd", 5, 12), ("In", 5, 13), ("Sn", 5, 14), ("Sb", 5, 15),
-        ("Te", 5, 16), ("I", 5, 17), ("Xe", 5, 18),
-        ("Cs", 6, 1), ("Ba", 6, 2), ("La", 6, 3), ("Hf", 6, 4), ("Ta", 6, 5),
-        ("W", 6, 6), ("Re", 6, 7), ("Os", 6, 8), ("Ir", 6, 9), ("Pt", 6, 10),
-        ("Au", 6, 11), ("Hg", 6, 12), ("Tl", 6, 13), ("Pb", 6, 14), ("Bi", 6, 15),
-        ("Po", 6, 16), ("At", 6, 17), ("Rn", 6, 18),
-        ("Fr", 7, 1), ("Ra", 7, 2), ("Ac", 7, 3), ("Rf", 7, 4), ("Db", 7, 5),
-        ("Sg", 7, 6), ("Bh", 7, 7), ("Hs", 7, 8), ("Mt", 7, 9), ("Ds", 7, 10),
-        ("Rg", 7, 11), ("Cn", 7, 12), ("Nh", 7, 13), ("Fl", 7, 14), ("Mc", 7, 15),
-        ("Lv", 7, 16), ("Ts", 7, 17), ("Og", 7, 18),
-    ]
-
-
-def _lanthanides() -> list[str]:
-    return ["Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu"]
-
-
-def _actinides() -> list[str]:
-    return ["Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr"]
-
-
-def _element_style(symbol: str) -> str:
-    return _element_state_style("neutral")
-
-
-def _element_state_style(state: str) -> str:
-    palette = {
-        "neutral": ("#24272b", "#4a525a", "#d8dde3"),
-        "required": ("#1e7f73", "#40c4ad", "#eefcf9"),
-        "excluded": ("#7c304f", "#d06491", "#fff4f8"),
-        "any": ("#315f92", "#69a7e8", "#f3f9ff"),
-        "optional": ("#765b22", "#d8b75a", "#fff8df"),
-    }
-    background, border, color = palette.get(state, palette["neutral"])
+def _command_button_style(background: str, border: str, color: str = "#ffffff") -> str:
     return (
         "QPushButton {"
         f"background: {background}; border: 1px solid {border}; color: {color};"
-        "padding: 0px; font-weight: 600; border-radius: 2px;"
+        "border-radius: 5px; padding: 7px 14px; font-weight: 700;"
         "}"
+        "QPushButton:pressed { padding-top: 8px; padding-bottom: 6px; }"
     )
-
-
-def _element_sort_key(symbol: str) -> int:
-    order = [item[0] for item in _periodic_table_positions()] + _lanthanides() + _actinides()
-    try:
-        return order.index(symbol)
-    except ValueError:
-        return len(order)
-
-
-class ElementFilterButton(QPushButton):
-    leftClicked = Signal(str)
-    rightClicked = Signal(str)
-
-    def __init__(self, symbol: str) -> None:
-        super().__init__(symbol)
-        self.symbol = symbol
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.RightButton:
-            self.rightClicked.emit(self.symbol)
-            event.accept()
-            return
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.leftClicked.emit(self.symbol)
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
 
 class AnalysisWindow(QDialog):
     project_changed = Signal()
+    IMPORT_SUFFIXES = {".xy", ".txt", ".dat", ".csv", ".xye", ".cif"}
 
     def __init__(self, project: Project, title: str) -> None:
         super().__init__()
         self.project = project
         self.setWindowTitle(f"{title} - {project.name}")
+        self.setAcceptDrops(True)
+        self._drop_targets: list[QWidget] = []
         self.setWindowFlags(
             self.windowFlags()
             | Qt.WindowType.Window
@@ -176,25 +144,48 @@ class AnalysisWindow(QDialog):
         self.resize(1300, 820)
 
         self.tree = ProjectTree()
+        self._register_drop_target(self.tree)
         self.tree.set_project(project)
         self.tree.object_open_requested.connect(self._open_project_object)
+        self.tree.itemSelectionChanged.connect(self._on_project_tree_selection_changed)
         self.tree.pattern_selection_changed.connect(lambda _ids: self._on_project_tree_selection_changed())
         self.tree.phase_selection_changed.connect(lambda _ids: self._on_project_tree_selection_changed())
 
         self.sidebar = QWidget()
+        self._register_drop_target(self.sidebar)
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(6)
         import_button = QPushButton("Import XRD / CIF")
+        import_button.setMinimumHeight(34)
+        import_button.setStyleSheet(_command_button_style("#e9328f", "#ff65b3"))
         import_button.clicked.connect(self._import_scientific_files)
+        order_row = QHBoxLayout()
+        order_row.setContentsMargins(0, 0, 0, 0)
+        order_row.setSpacing(4)
+        order_row.addWidget(QLabel("Order"))
+        move_up_button = QToolButton()
+        move_up_button.setText("↑")
+        move_up_button.setToolTip("Move selected XRD or CIF up")
+        move_up_button.clicked.connect(lambda: self._move_current_tree_object(-1))
+        move_down_button = QToolButton()
+        move_down_button.setText("↓")
+        move_down_button.setToolTip("Move selected XRD or CIF down")
+        move_down_button.clicked.connect(lambda: self._move_current_tree_object(1))
+        order_row.addWidget(move_up_button)
+        order_row.addWidget(move_down_button)
+        order_row.addStretch(1)
         sidebar_layout.addWidget(import_button)
+        sidebar_layout.addLayout(order_row)
         sidebar_layout.addWidget(self.tree, 1)
 
         self.center = QWidget()
+        self._register_drop_target(self.center)
         self.center_layout = QVBoxLayout(self.center)
         self.center_layout.setContentsMargins(6, 6, 6, 6)
 
         self.right_tabs = QTabWidget()
+        self._register_drop_target(self.right_tabs)
         self.right_tabs.setMinimumWidth(280)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -214,6 +205,33 @@ class AnalysisWindow(QDialog):
         if object_type == "phase":
             self.tree.set_checked_phase_ids([object_id])
 
+    def _move_current_tree_object(self, direction: int) -> None:
+        current = self.tree.current_object()
+        if current is None:
+            return
+        object_type, object_id = current
+        objects = self.project.patterns if object_type == "pattern" else self.project.phases
+        index = next((i for i, project_object in enumerate(objects) if project_object.id == object_id), -1)
+        new_index = index + direction
+        if index < 0 or new_index < 0 or new_index >= len(objects):
+            return
+        objects[index], objects[new_index] = objects[new_index], objects[index]
+        if object_type == "phase":
+            self._sync_structures_to_phase_order()
+        self.tree.set_project(self.project)
+        self.tree.select_object(object_type, object_id)
+        self.project_changed.emit()
+        self._on_project_tree_selection_changed()
+
+    def _sync_structures_to_phase_order(self) -> None:
+        phase_rank = {phase.id: index for index, phase in enumerate(self.project.phases)}
+        self.project.structures.sort(
+            key=lambda structure: (
+                phase_rank.get(structure.phase_id or "", len(phase_rank)),
+                structure.name,
+            )
+        )
+
     def _import_scientific_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
             self,
@@ -223,31 +241,93 @@ class AnalysisWindow(QDialog):
         )
         if not paths:
             return
-        self._remember_directory(paths[0])
+        self._import_scientific_paths([Path(path) for path in paths])
 
+    def _import_scientific_paths(self, paths: list[Path]) -> None:
+        paths = [path for path in paths if path.is_file()]
+        if not paths:
+            return
+        self._remember_directory(paths[0])
         imported = False
         errors: list[str] = []
         for path in paths:
-            source = Path(path)
-            suffix = source.suffix.lower()
+            suffix = path.suffix.lower()
+            if suffix not in self.IMPORT_SUFFIXES:
+                errors.append(f"{path.name}: unsupported file type")
+                continue
             try:
                 if suffix == ".cif":
-                    phase, structure = create_phase_from_cif(source)
+                    phase, structure = create_phase_from_cif(path)
                     self.project.phases.append(phase)
                     self.project.structures.append(structure)
                 else:
-                    self.project.patterns.append(Pattern.create(name=source.stem, source_path=str(source)))
+                    load_xy(path)
+                    self.project.patterns.append(Pattern.create(name=path.stem, source_path=str(path)))
                 imported = True
             except Exception as exc:
-                errors.append(f"{source.name}: {exc}")
+                errors.append(f"{path.name}: {exc}")
 
         if imported:
             self.tree.set_project(self.project)
             self._on_project_tree_selection_changed()
             if hasattr(self, "_refresh_project_phase_candidates"):
                 self._refresh_project_phase_candidates()
+            self.project_changed.emit()
         if errors:
             QMessageBox.warning(self, "Import", "\n".join(errors[:5]))
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._drop_file_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._drop_file_paths(event):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        paths = self._drop_file_paths(event)
+        if not paths:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        self._import_scientific_paths(paths)
+
+    def _drop_file_paths(self, event) -> list[Path]:
+        mime_data = event.mimeData()
+        if not mime_data.hasUrls():
+            return []
+        paths = []
+        for url in mime_data.urls():
+            if not url.isLocalFile():
+                continue
+            path = Path(url.toLocalFile())
+            if path.is_file() and path.suffix.lower() in self.IMPORT_SUFFIXES:
+                paths.append(path)
+        return paths
+
+    def _register_drop_target(self, widget: QWidget) -> None:
+        widget.setAcceptDrops(True)
+        widget.installEventFilter(self)
+        self._drop_targets.append(widget)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched in self._drop_targets:
+            if event.type() in {QEvent.Type.DragEnter, QEvent.Type.DragMove}:
+                paths = self._drop_file_paths(event)
+                if paths:
+                    event.acceptProposedAction()
+                    return True
+            if event.type() == QEvent.Type.Drop:
+                paths = self._drop_file_paths(event)
+                if paths:
+                    event.acceptProposedAction()
+                    self._import_scientific_paths(paths)
+                    return True
+        return super().eventFilter(watched, event)
 
     def _last_directory(self) -> str:
         settings = QSettings("Xrdfinder", "Standalone")
@@ -264,6 +344,11 @@ class AnalysisWindow(QDialog):
         pass
 
     def _active_pattern(self):
+        current_pattern_id = self.tree.current_pattern_id()
+        if current_pattern_id:
+            for pattern in self.project.patterns:
+                if pattern.id == current_pattern_id:
+                    return pattern
         checked = self.tree.checked_pattern_ids()
         if checked:
             for pattern in self.project.patterns:
@@ -281,7 +366,7 @@ class AnalysisWindow(QDialog):
         table = QTableWidget(len(rows), len(headers))
         table.setHorizontalHeaderLabels(headers)
         for row_index, row in enumerate(rows):
-            for col_index, value in enumerate(row):
+            for col_index, value in enumerate(row[: len(headers)]):
                 table.setItem(row_index, col_index, QTableWidgetItem(value))
         table.resizeColumnsToContents()
         return table
@@ -291,9 +376,8 @@ class PhaseFinderWindow(AnalysisWindow):
     def __init__(self, project: Project) -> None:
         super().__init__(project, "Phase Finder")
         self.resize(1500, 850)
-        self.right_tabs.setMinimumWidth(460)
-        self._element_widgets: list[QWidget] = []
-        self._element_buttons: dict[str, QPushButton] = {}
+        self.right_tabs.setMinimumWidth(520)
+        self.element_table: PeriodicTableWidget | None = None
         self.element_states: dict[str, str] = {}
         self.selected_elements: set[str] = set()
         self.selected_element_order: list[str] = []
@@ -303,24 +387,29 @@ class PhaseFinderWindow(AnalysisWindow):
         self.cod_online = CodOnlineService()
         self.ccdc = CcdcService()
         self.local_phase_cache = LocalPhaseCache()
+        self.rruff = RruffService(self.local_phase_cache.root / "rruff")
         self.materials_project = MaterialsProjectService(
             str(self.settings.value("materials_project/api_key", "", type=str) or "")
         )
         self.calculated_pattern_service = CalculatedPatternService()
         self.finder_service = FinderService(self.calculated_pattern_service)
+        self.candidate_search_service = CandidateSearchService(
+            self.local_phase_cache,
+            self.cod_online,
+            self.ccdc,
+            self.rruff,
+            self.materials_project,
+        )
+        self.finder_action_bar: FinderActionBar | None = None
         self.search_input: QLineEdit | None = None
         self.name_input: QLineEdit | None = None
         self.elem_count_input: QLineEdit | None = None
         self.formula_sum_input: QLineEdit | None = None
         self.ccdc_doi_input: QLineEdit | None = None
-        self.mp_api_key_input: QLineEdit | None = None
-        self.mp_status_label: QLabel | None = None
-        self.database_table: QTableWidget | None = None
+        self.database_panel: DatabasePanelWidget | None = None
+        self.compound_card: CompoundCardWidget | None = None
         self.inorganics_checkbox: QCheckBox | None = None
         self.organics_checkbox: QCheckBox | None = None
-        self.local_cache_checkbox: QCheckBox | None = None
-        self.cod_online_checkbox: QCheckBox | None = None
-        self.use_materials_project_checkbox: QCheckBox | None = None
         self.plot_layers: dict[str, list] = {
             "observed": [],
             "calculated_profile": [],
@@ -335,9 +424,14 @@ class PhaseFinderWindow(AnalysisWindow):
             "unknown_peaks": [],
             "hkl": [],
             "candidate_markers": [],
+            "preview_profile": [],
+            "preview_peak_positions": [],
+            "preview_peak_links": [],
+            "preview_hkl": [],
             "legend_info": [],
         }
         self.grid_visible = True
+        self.show_hkl_labels = False
         self.legend_item = None
         self.active_overlay_entry_id: str | None = None
         self.match_candidates: list[dict[str, str]] = []
@@ -345,13 +439,27 @@ class PhaseFinderWindow(AnalysisWindow):
         self.match_scales: dict[str, float] = {}
         self.match_quantities: dict[str, float] = {}
         self.match_iic: dict[str, float] = {}
+        self._corundum_peak_cache: dict[tuple[float, float, float], list] = {}
         self.match_zero_shifts: dict[str, float] = {}
         self.match_cell_scales: dict[str, float] = {}
         self.match_alignment_scores: dict[str, str] = {}
         self.preprocessed_observed_data: np.ndarray | None = None
         self.preprocessing_background_removed = False
+        self.show_all_selected_patterns = False
+        self.pattern_stack_offset_percent = 10
+        self.observed_pattern_plot_context: dict[str, dict[str, float]] = {}
+        self.match_plot_view_initialized = False
 
-        self.center_layout.addWidget(self._finder_action_bar())
+        self.finder_action_bar = FinderActionBar()
+        self.finder_action_bar.smoothRequested.connect(self._smooth_active_pattern_plot)
+        self.finder_action_bar.subtractBackgroundRequested.connect(self._subtract_active_background_plot)
+        self.finder_action_bar.resetDataRequested.connect(self._reset_observed_preprocessing)
+        self.finder_action_bar.searchRequested.connect(self._search_pdf2_text)
+        self.finder_action_bar.patternDisplayModeChanged.connect(self._set_pattern_display_mode)
+        self.finder_action_bar.patternOffsetPercentChanged.connect(self._set_pattern_stack_offset)
+        self.finder_action_bar.resetViewRequested.connect(self._reset_match_plot_view)
+        self.search_input = self.finder_action_bar.search_input
+        self.center_layout.addWidget(self.finder_action_bar)
 
         self.match_plot = self._plot_widget("Phase Finder: pattern and candidate phase markers", xrd_navigation=True)
         self.match_plot.setTitle("Phase Finder: pattern and candidate phase markers", color="#111111", size="13pt")
@@ -374,8 +482,13 @@ class PhaseFinderWindow(AnalysisWindow):
             candidate_rows = [["", "", "", "No phases yet", "", ""]]
 
         self.center_layout.addWidget(self.match_plot, 4)
-        self.candidate_table = self._candidate_table(candidate_rows)
-        self.match_table = self._match_table()
+        self.candidate_table = CandidateTableWidget(candidate_rows)
+        self.candidate_table.rowClicked.connect(self._on_candidate_row_clicked)
+        self.candidate_table.addRequested.connect(self._add_selected_candidate_to_match_list)
+        self.candidate_table.contextRequested.connect(self._show_candidate_context_menu)
+        self.match_table = SelectedCandidatesTableWidget()
+        self.match_table.rowClicked.connect(self._on_match_row_clicked)
+        self.match_table.contextRequested.connect(self._show_match_context_menu)
         candidate_panel = QWidget()
         candidate_layout = QVBoxLayout(candidate_panel)
         candidate_layout.setContentsMargins(0, 0, 0, 0)
@@ -385,39 +498,10 @@ class PhaseFinderWindow(AnalysisWindow):
         self.center_layout.addWidget(candidate_panel, 1)
 
         self.right_tabs.addTab(self._composition_tab(), "Elements")
-        self.right_tabs.addTab(self._simple_tab(["Use selected pattern", "Auto mark peaks", "Show candidates"]), "Peaks/Ranges")
-        self.right_tabs.addTab(self._database_tab(), "References")
+        self.compound_card = CompoundCardWidget()
+        self.right_tabs.addTab(self.compound_card, "Card")
+        self.right_tabs.addTab(self._database_tab(), "Databases")
         self._apply_default_phase_filter()
-
-    def _finder_action_bar(self) -> QWidget:
-        wrapper = QWidget()
-        layout = QHBoxLayout(wrapper)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-
-        smooth_button = QPushButton("Smooth")
-        smooth_button.setToolTip("Smooth observed XRD curve")
-        smooth_button.clicked.connect(self._smooth_active_pattern_plot)
-        background_button = QPushButton("Remove background")
-        background_button.setToolTip("Estimate and subtract background")
-        background_button.clicked.connect(self._subtract_active_background_plot)
-        reset_data_button = QPushButton("Reset data")
-        reset_data_button.setToolTip("Restore the original observed pattern")
-        reset_data_button.clicked.connect(self._reset_observed_preprocessing)
-        reset_button = QPushButton("Reset view")
-        reset_button.clicked.connect(lambda: self.match_plot.autoRange() if hasattr(self, "match_plot") else None)
-
-        layout.addWidget(smooth_button)
-        layout.addWidget(background_button)
-        layout.addWidget(reset_data_button)
-        layout.addStretch(1)
-
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Formula / elements / phase name")
-        self.search_input.returnPressed.connect(self._search_pdf2_text)
-        layout.addWidget(self.search_input, 2)
-        layout.addWidget(reset_button)
-        return wrapper
 
     def _smooth_active_pattern_plot(self) -> None:
         data = self._active_observed_data()
@@ -467,13 +551,10 @@ class PhaseFinderWindow(AnalysisWindow):
                 self._calculate_candidate_overlay(candidate, show_errors=False)
 
     def _replace_observed_curve(self, x: np.ndarray, y: np.ndarray, name: str) -> None:
-        for item in self.plot_layers.get("observed", []):
-            self.match_plot.removeItem(item)
-        self.plot_layers["observed"] = [
-            self.match_plot.plot(x, y, pen=pg.mkPen("#202124", width=1.0), name=name)
-        ]
-        self.match_plot.setXRange(float(np.nanmin(x)), float(np.nanmax(x)), padding=0.02)
-        self.match_plot.setYRange(float(np.nanmin(y)), float(np.nanmax(y)), padding=0.08)
+        pattern = self._active_pattern()
+        self._draw_observed_patterns(
+            active_override=(pattern.id if pattern is not None else "", np.column_stack([x, y]), name)
+        )
 
     def _refresh_project_phase_candidates(self) -> None:
         if not hasattr(self, "candidate_table"):
@@ -489,14 +570,29 @@ class PhaseFinderWindow(AnalysisWindow):
     def _on_project_tree_selection_changed(self) -> None:
         if not hasattr(self, "match_plot"):
             return
+        view_range = self._plot_view_range() if self.show_all_selected_patterns else None
+        try:
+            self._refresh_observed_pattern_plot()
+            if self.match_candidates:
+                self._recalculate_match_profile()
+            elif self.active_overlay_entry_id:
+                candidate = self._selected_candidate_row()
+                if candidate is not None:
+                    self.active_overlay_entry_id = None
+                    self._calculate_candidate_overlay(candidate, show_errors=False)
+        finally:
+            self._restore_plot_view_range(view_range)
+
+    def _set_pattern_display_mode(self, mode: str) -> None:
+        self.show_all_selected_patterns = mode == "All selected"
         self._refresh_observed_pattern_plot()
-        if self.match_candidates:
-            self._recalculate_match_profile()
-        elif self.active_overlay_entry_id:
-            candidate = self._selected_candidate_row()
-            if candidate is not None:
-                self.active_overlay_entry_id = None
-                self._calculate_candidate_overlay(candidate, show_errors=False)
+        self._rerun_active_calculation()
+
+    def _set_pattern_stack_offset(self, percent: int) -> None:
+        self.pattern_stack_offset_percent = max(0, int(percent))
+        if self.show_all_selected_patterns:
+            self._refresh_observed_pattern_plot()
+            self._rerun_active_calculation()
 
     def _active_observed_data(self):
         if self.preprocessed_observed_data is not None:
@@ -510,25 +606,125 @@ class PhaseFinderWindow(AnalysisWindow):
             return None
 
     def _refresh_observed_pattern_plot(self) -> None:
+        self.preprocessed_observed_data = None
+        self.preprocessing_background_removed = False
+        self._draw_observed_patterns()
+
+    def _patterns_to_display(self):
+        if self.show_all_selected_patterns:
+            checked = set(self.tree.checked_pattern_ids())
+            patterns = [pattern for pattern in self.project.patterns if pattern.id in checked]
+            if patterns:
+                return patterns
+        pattern = self._active_pattern()
+        return [pattern] if pattern is not None else []
+
+    def _draw_observed_patterns(self, active_override=None) -> None:
         for item in self.plot_layers.get("observed", []):
             self.match_plot.removeItem(item)
         self.plot_layers["observed"] = []
-        self.preprocessed_observed_data = None
-        self.preprocessing_background_removed = False
-        data = self._active_observed_data()
-        if data is None:
+        self.legend_item = ensure_right_legend(self.match_plot, clear=True)
+        self.observed_pattern_plot_context = {}
+
+        patterns = self._patterns_to_display()
+        active_pattern = self._active_pattern()
+        active_id = active_pattern.id if active_pattern is not None else ""
+        colors = ["#202124", "#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa", "#00acc1", "#c5221f"]
+        x_values = []
+        y_values = []
+        color_index = 0
+        loaded_patterns = []
+
+        for pattern in patterns:
+            try:
+                if active_override is not None and pattern.id == active_override[0]:
+                    data = np.asarray(active_override[1], dtype=float)
+                    name = active_override[2]
+                else:
+                    data = load_xy(pattern.source_path)
+                    name = f"Observed: {pattern.name}"
+            except Exception:
+                continue
+            if data is None or len(data) == 0:
+                continue
+            x = np.asarray(data[:, 0], dtype=float)
+            y = np.asarray(data[:, 1], dtype=float)
+            finite_y = y[np.isfinite(y)]
+            pattern_height = float(np.nanmax(finite_y) - np.nanmin(finite_y)) if finite_y.size else 0.0
+            loaded_patterns.append((pattern, name, x, y, pattern_height))
+
+        offsets: dict[str, float] = {}
+        if self.show_all_selected_patterns:
+            y_offset = 0.0
+            previous_height = 0.0
+            for pattern, _name, _x, _y, pattern_height in reversed(loaded_patterns):
+                if offsets:
+                    y_offset += previous_height * (self.pattern_stack_offset_percent / 100.0)
+                offsets[pattern.id] = y_offset
+                previous_height = pattern_height
+
+        for pattern, name, x, raw_y, pattern_height in loaded_patterns:
+            y_offset = offsets.get(pattern.id, 0.0)
+            y = raw_y + y_offset
+            if pattern.id == active_id:
+                color = "#202124"
+            else:
+                color_index += 1
+                color = colors[color_index % len(colors)]
+            width = 1.35 if pattern.id == active_id else 1.15
+            alpha_color = color
+            curve_item = self.match_plot.plot(x, y, pen=pg.mkPen(alpha_color, width=width))
+            legend_proxy = self.match_plot.plot(
+                [],
+                [],
+                pen=pg.mkPen(alpha_color, width=width),
+                symbol="o" if pattern.id == active_id else None,
+                symbolSize=7,
+                symbolBrush=pg.mkBrush("#e11d21") if pattern.id == active_id else None,
+                symbolPen=pg.mkPen("#e11d21", width=1.0) if pattern.id == active_id else None,
+                name=name,
+            )
+            self.plot_layers["observed"].extend([curve_item, legend_proxy])
+            finite_raw_y = raw_y[np.isfinite(raw_y)]
+            raw_min = float(np.nanmin(finite_raw_y)) if finite_raw_y.size else 0.0
+            raw_max = float(np.nanmax(finite_raw_y)) if finite_raw_y.size else 1.0
+            self.observed_pattern_plot_context[pattern.id] = {
+                "offset": float(y_offset),
+                "raw_min": raw_min,
+                "raw_max": raw_max,
+                "plot_min": raw_min + float(y_offset),
+                "plot_max": raw_max + float(y_offset),
+                "height": float(pattern_height),
+            }
+            x_values.append(x)
+            y_values.append(y)
+
+        if x_values and y_values and not self.match_plot_view_initialized:
+            self._reset_match_plot_view()
+
+    def _plot_view_range(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        view_range = self.match_plot.plotItem.vb.viewRange()
+        return (tuple(view_range[0]), tuple(view_range[1]))
+
+    def _restore_plot_view_range(self, view_range: tuple[tuple[float, float], tuple[float, float]] | None) -> None:
+        if view_range is None:
             return
+        (xmin, xmax), (ymin, ymax) = view_range
+        self.match_plot.setXRange(float(xmin), float(xmax), padding=0.0)
+        self.match_plot.setYRange(float(ymin), float(ymax), padding=0.0)
+
+    def _active_pattern_plot_context(self) -> dict[str, float]:
         pattern = self._active_pattern()
-        name = pattern.name if pattern is not None else "Observed"
-        observed_item = self.match_plot.plot(
-            data[:, 0],
-            data[:, 1],
-            pen=pg.mkPen("#202124", width=1.0),
-            name=f"Observed: {name}",
+        if pattern is None:
+            return {"offset": 0.0, "raw_min": 0.0, "raw_max": 1.0, "plot_min": 0.0, "plot_max": 1.0, "height": 1.0}
+        return self.observed_pattern_plot_context.get(
+            pattern.id,
+            {"offset": 0.0, "raw_min": 0.0, "raw_max": 1.0, "plot_min": 0.0, "plot_max": 1.0, "height": 1.0},
         )
-        self.plot_layers["observed"].append(observed_item)
-        self.match_plot.setXRange(float(np.nanmin(data[:, 0])), float(np.nanmax(data[:, 0])), padding=0.02)
-        self.match_plot.setYRange(float(np.nanmin(data[:, 1])), float(np.nanmax(data[:, 1])), padding=0.08)
+
+    def _reset_match_plot_view(self) -> None:
+        self.match_plot.autoRange()
+        self.match_plot_view_initialized = True
 
     def _match_menu_bar(self) -> QMenuBar:
         menu_bar = QMenuBar()
@@ -654,84 +850,14 @@ class PhaseFinderWindow(AnalysisWindow):
         scale = QComboBox()
         scale.addItems(["90%", "100%", "110%", "120%"])
         scale.setCurrentText("100%")
-        scale.currentTextChanged.connect(self._set_element_scale)
         top_row.addWidget(scale)
         outer_layout.addLayout(top_row)
 
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
-
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(2)
-        grid.setVerticalSpacing(2)
-
-        for group in range(1, 19):
-            label = QLabel(str(group))
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("background: #202328; border: 1px solid #3d444d; color: #9aa4af;")
-            label.setFixedSize(22, 18)
-            self._element_widgets.append(label)
-            grid.addWidget(label, 0, group)
-
-        for period in range(1, 8):
-            label = QLabel(f"P{period}")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("background: #202328; border: 1px solid #3d444d; color: #9aa4af;")
-            label.setFixedSize(22, 18)
-            self._element_widgets.append(label)
-            grid.addWidget(label, period, 0)
-
-        for symbol, period, group in _periodic_table_positions():
-            button = ElementFilterButton(symbol)
-            button.setFixedSize(22, 18)
-            button.setStyleSheet(_element_state_style("excluded"))
-            button.setToolTip(symbol)
-            button.leftClicked.connect(self._toggle_required_element)
-            button.rightClicked.connect(self._toggle_required_element)
-            self._element_buttons[symbol] = button
-            self._element_widgets.append(button)
-            grid.addWidget(button, period, group)
-
-        lanth_label = QLabel("L")
-        lanth_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lanth_label.setStyleSheet("background: #202328; border: 1px solid #3d444d; color: #9aa4af;")
-        lanth_label.setFixedSize(22, 18)
-        act_label = QLabel("A")
-        act_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        act_label.setStyleSheet("background: #202328; border: 1px solid #3d444d; color: #9aa4af;")
-        act_label.setFixedSize(22, 18)
-        self._element_widgets.extend([lanth_label, act_label])
-        grid.addWidget(lanth_label, 9, 3)
-        grid.addWidget(act_label, 10, 3)
-
-        for index, symbol in enumerate(_lanthanides()):
-            button = ElementFilterButton(symbol)
-            button.setFixedSize(22, 18)
-            button.setStyleSheet(_element_state_style("excluded"))
-            button.setToolTip(symbol)
-            button.leftClicked.connect(self._toggle_required_element)
-            button.rightClicked.connect(self._toggle_required_element)
-            self._element_buttons[symbol] = button
-            self._element_widgets.append(button)
-            grid.addWidget(button, 9, 4 + index)
-
-        for index, symbol in enumerate(_actinides()):
-            button = ElementFilterButton(symbol)
-            button.setFixedSize(22, 18)
-            button.setStyleSheet(_element_state_style("excluded"))
-            button.setToolTip(symbol)
-            button.leftClicked.connect(self._toggle_required_element)
-            button.rightClicked.connect(self._toggle_required_element)
-            self._element_buttons[symbol] = button
-            self._element_widgets.append(button)
-            grid.addWidget(button, 10, 4 + index)
-
-        layout.addLayout(grid)
-        panel.setMaximumHeight(230)
-        outer_layout.addWidget(panel)
+        self.element_table = PeriodicTableWidget()
+        self.element_table.leftClicked.connect(self._toggle_required_element)
+        self.element_table.rightClicked.connect(self._toggle_optional_element)
+        scale.currentTextChanged.connect(self.element_table.set_scale)
+        outer_layout.addWidget(self.element_table)
 
         self.name_input = QLineEdit()
         self.name_input.hide()
@@ -756,17 +882,14 @@ class PhaseFinderWindow(AnalysisWindow):
         material_row.addWidget(self.organics_checkbox)
         material_row.addStretch(1)
         outer_layout.addLayout(material_row)
-        self.local_cache_checkbox = QCheckBox("User library")
-        self.local_cache_checkbox.setChecked(True)
-        self.local_cache_checkbox.hide()
-        self.cod_online_checkbox = QCheckBox("COD online")
-        self.cod_online_checkbox.setChecked(True)
-        self.cod_online_checkbox.hide()
-
         actions = QHBoxLayout()
         search_button = QPushButton("Find")
+        search_button.setMinimumHeight(34)
+        search_button.setStyleSheet(_command_button_style("#0b8043", "#35a96c"))
         search_button.clicked.connect(self._search_from_controls)
         reset_button = QPushButton("Reset table")
+        reset_button.setMinimumHeight(34)
+        reset_button.setStyleSheet(_command_button_style("#5f6368", "#8a8d91"))
         reset_button.clicked.connect(self._reset_selected_elements)
         actions.addWidget(search_button)
         actions.addWidget(reset_button)
@@ -775,71 +898,113 @@ class PhaseFinderWindow(AnalysisWindow):
         outer_layout.addWidget(self.match_table, 1)
         return widget
 
-    def _candidate_table(self, rows: list[list[str]]) -> QTableWidget:
-        table = self._table(
-            [
-                "Source",
-                "Entry",
-                "Formula",
-                "Phase",
-                "I/Ic*",
-                "Notes",
-            ],
-            rows,
-        )
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        table.setMinimumHeight(190)
-        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        table.setAlternatingRowColors(True)
-        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        table.customContextMenuRequested.connect(self._show_candidate_context_menu)
-        table.cellClicked.connect(lambda row, _column: self._preview_candidate_row(row))
-        table.cellDoubleClicked.connect(lambda _row, _column: self._add_selected_candidate_to_match_list())
-        return table
+    def _on_candidate_row_clicked(self, row: int) -> None:
+        candidate = self._candidate_row_values(row)
+        self._enrich_candidate_with_structure_info(candidate)
+        self._refresh_candidate_table_row(row, candidate)
+        self.candidate_table.set_iic(row, candidate.get("I/Ic*", ""))
+        self._update_compound_card(candidate)
+        self._preview_candidate_row(row)
 
-    def _match_table(self) -> QTableWidget:
-        table = self._table(
-            ["Color", "Phase", "Formula", "Peaks", "Scale", "Quant. (%)", "Shift 2theta", "Cell scale", "I/Ic*"],
-            [],
-        )
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.setMinimumHeight(190)
-        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        table.setAlternatingRowColors(True)
-        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        table.customContextMenuRequested.connect(self._show_match_context_menu)
-        return table
+    def _update_compound_card(self, candidate: dict[str, str] | None) -> None:
+        if self.compound_card is not None:
+            self.compound_card.set_candidate(candidate)
 
-    def _show_candidate_context_menu(self, point) -> None:
-        row = self.candidate_table.rowAt(point.y())
-        if row >= 0:
-            self.candidate_table.selectRow(row)
+    def _enrich_candidate_with_structure_info(self, candidate: dict[str, str]) -> None:
+        if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"} or not candidate.get("Entry"):
+            return
+        try:
+            cif_path = self._candidate_cif_path(candidate)
+            _phase, structure = create_phase_from_cif(cif_path)
+        except Exception:
+            return
+        if structure.name:
+            candidate["Phase"] = structure.name
+        if structure.formula:
+            candidate["Formula"] = self.candidate_search_service.display_formula(structure.formula)
+        iic = self._estimate_structure_corundum_iic(structure)
+        if iic > 0:
+            candidate["I/Ic*"] = f"{iic:.3g}"
+        candidate["Space group"] = structure.space_group or structure.space_group_number or ""
+        cell = structure.cell
+        if all(getattr(cell, name, None) is not None for name in ("a", "b", "c", "alpha", "beta", "gamma")):
+            candidate["Cell"] = (
+                f"a {cell.a:.4g}   b {cell.b:.4g}   c {cell.c:.4g}\n"
+                f"alpha {cell.alpha:.4g}   beta {cell.beta:.4g}   gamma {cell.gamma:.4g}"
+            )
+        atoms = []
+        atom_rows = []
+        for atom in (structure.atoms or [])[:12]:
+            coords = []
+            for value in (atom.x, atom.y, atom.z):
+                coords.append(f"{value:.4g}" if value is not None else "?")
+            occ = f", occ={atom.occupancy:.3g}" if atom.occupancy is not None else ""
+            atoms.append(f"{atom.label or atom.element} {atom.element} ({', '.join(coords)}{occ})")
+            atom_rows.append([
+                atom.label or atom.element,
+                atom.element,
+                coords[0],
+                coords[1],
+                coords[2],
+                f"{atom.occupancy:.3g}" if atom.occupancy is not None else "",
+            ])
+        if atoms:
+            suffix = "" if len(structure.atoms) <= 12 else f"\n... +{len(structure.atoms) - 12} atoms"
+            candidate["Atoms"] = "\n".join(atoms) + suffix
+            candidate["_AtomRows"] = atom_rows
+        publication = str(structure.metadata.get("publication", "") or "")
+        if publication:
+            candidate["Notes"] = publication
+        doi = str(structure.metadata.get("doi", "") or "")
+        if doi:
+            candidate["DOI"] = doi
+
+    def _refresh_candidate_table_row(self, row: int, candidate: dict[str, str]) -> None:
+        if row < 0 or row >= self.candidate_table.rowCount():
+            return
+        for header, value in {
+            "Formula": candidate.get("Formula", ""),
+            "Phase": candidate.get("Phase", ""),
+            "I/Ic*": candidate.get("I/Ic*", ""),
+        }.items():
+            column = -1
+            for index in range(self.candidate_table.columnCount()):
+                header_item = self.candidate_table.horizontalHeaderItem(index)
+                if header_item is not None and header_item.text() == header:
+                    column = index
+                    break
+            if column >= 0 and value:
+                self.candidate_table.setItem(row, column, QTableWidgetItem(value))
+
+    def _on_match_row_clicked(self, row: int) -> None:
+        if row < 0 or row >= len(self.match_candidates):
+            return
+        candidate = self.match_candidates[row]
+        self._enrich_candidate_with_structure_info(candidate)
+        self._update_compound_card(candidate)
+        self._recalculate_match_profile()
+
+    def _show_candidate_context_menu(self, global_point) -> None:
         menu = QMenu(self)
         menu.addAction("Add to working set", self._add_selected_candidate_to_match_list)
         menu.addAction("Calculate pattern overlay", self._calculate_selected_cif_overlay)
-        menu.addAction("Export CIF...", self._export_selected_cif)
-        menu.exec(self.candidate_table.viewport().mapToGlobal(point))
+        menu.addAction("Export candidate CIF...", self._export_candidate_table_cif)
+        menu.exec(global_point)
 
-    def _show_match_context_menu(self, point) -> None:
-        row = self.match_table.rowAt(point.y())
-        if row >= 0:
-            self.match_table.selectRow(row)
+    def _show_match_context_menu(self, global_point) -> None:
         menu = QMenu(self)
         menu.addAction("Recalculate selected profile", self._recalculate_match_profile)
+        menu.addAction("Change color...", self._change_selected_match_color)
+        menu.addAction("Export phase CIF...", self._export_match_table_cif)
         menu.addAction("Remove selected phase", self._remove_selected_match_candidate)
         menu.addAction("Clear working set", self._clear_match_list)
-        menu.exec(self.match_table.viewport().mapToGlobal(point))
+        menu.exec(global_point)
 
     def _show_plot_context_menu(self, point) -> None:
         menu = QMenu(self)
         menu.addAction("Export image...", self._export_plot_image)
-        menu.addAction("Export selected CIF...", self._export_selected_cif)
         menu.addSeparator()
-        menu.addAction("Full pattern", self._full_pattern_range)
+        menu.addAction("Show full pattern", self._full_pattern_range)
         grid_action = menu.addAction("Grid")
         grid_action.setCheckable(True)
         grid_action.setChecked(self.grid_visible)
@@ -848,7 +1013,12 @@ class PhaseFinderWindow(AnalysisWindow):
         legend_action.setCheckable(True)
         legend_action.setChecked(self.legend_item is not None)
         legend_action.toggled.connect(self._set_legend_visible)
+        hkl_action = menu.addAction("HKL labels")
+        hkl_action.setCheckable(True)
+        hkl_action.setChecked(self.show_hkl_labels)
+        hkl_action.toggled.connect(self._set_hkl_labels_enabled)
         menu.addAction(self._layer_action("Experimental pattern", "observed"))
+        menu.addAction(self._layer_action("Candidate preview", "preview_peak_positions"))
         menu.addAction(self._layer_action("Total calculated profile", "total_profile"))
         menu.addAction(self._layer_action("Individual phase profiles", "phase_profiles"))
         menu.addAction(self._layer_action("Background", "background"))
@@ -874,14 +1044,34 @@ class PhaseFinderWindow(AnalysisWindow):
         self._remember_directory(path)
         if not re.search(r"\.(png|jpe?g)$", path, flags=re.IGNORECASE):
             path += ".png"
-        if not self.match_plot.grab().save(path):
-            QMessageBox.warning(self, "Export image", "Could not save current plot image.")
+        try:
+            from pyqtgraph.exporters import ImageExporter
 
-    def _export_selected_cif(self) -> None:
-        candidate = self._selected_export_candidate()
+            exporter = ImageExporter(self.match_plot.plotItem)
+            params = exporter.parameters()
+            current_width = max(float(self.match_plot.width()), 1.0)
+            target_width = max(3200.0, current_width * 2.0)
+            params["width"] = target_width
+            exporter.export(path)
+        except Exception as exc:
+            if not self.match_plot.grab().save(path):
+                QMessageBox.warning(self, "Export image", f"Could not save current plot image:\n{exc}")
+
+    def _export_candidate_table_cif(self) -> None:
+        candidate = self._selected_candidate_row()
         if candidate is None:
-            QMessageBox.information(self, "Export CIF", "Select a candidate or a working phase first.")
+            QMessageBox.information(self, "Export CIF", "Select a candidate row first.")
             return
+        self._export_candidate_cif(candidate)
+
+    def _export_match_table_cif(self) -> None:
+        row = self.match_table.currentRow()
+        if row < 0 or row >= len(self.match_candidates):
+            QMessageBox.information(self, "Export CIF", "Select a phase row first.")
+            return
+        self._export_candidate_cif(self.match_candidates[row])
+
+    def _export_candidate_cif(self, candidate: dict[str, str]) -> None:
         try:
             source = self._candidate_cif_path(candidate)
         except Exception as exc:
@@ -904,15 +1094,6 @@ class PhaseFinderWindow(AnalysisWindow):
             shutil.copy2(source, path)
         except Exception as exc:
             QMessageBox.warning(self, "Export CIF", str(exc))
-
-    def _selected_export_candidate(self) -> dict[str, str] | None:
-        candidate = self._selected_candidate_row()
-        if candidate is not None and self._candidate_source(candidate):
-            return candidate
-        row = self.match_table.currentRow()
-        if 0 <= row < len(self.match_candidates):
-            return self.match_candidates[row]
-        return None
 
     def _layer_action(self, label: str, layer: str, checked: bool | None = None, enabled: bool = True):
         action = self._make_action(label)
@@ -947,6 +1128,10 @@ class PhaseFinderWindow(AnalysisWindow):
         self._set_layer_visible("peak_labels", visible)
         self._set_layer_visible("unknown_peaks", visible)
         self._set_layer_visible("hkl", visible)
+        self._set_layer_visible("preview_profile", visible)
+        self._set_layer_visible("preview_peak_positions", visible)
+        self._set_layer_visible("preview_peak_links", visible)
+        self._set_layer_visible("preview_hkl", visible)
 
     def _clear_calculated_overlay(self) -> None:
         for layer in [
@@ -961,12 +1146,35 @@ class PhaseFinderWindow(AnalysisWindow):
             "peak_labels",
             "unknown_peaks",
             "hkl",
+            "preview_profile",
+            "preview_peak_positions",
+            "preview_peak_links",
+            "preview_hkl",
             "legend_info",
         ]:
             for item in self.plot_layers.get(layer, []):
                 self.match_plot.removeItem(item)
             self.plot_layers[layer] = []
         self.active_overlay_entry_id = None
+
+    def _clear_preview_overlay(self) -> None:
+        for layer in ["preview_profile", "preview_peak_positions", "preview_peak_links", "preview_hkl"]:
+            for item in self.plot_layers.get(layer, []):
+                self.match_plot.removeItem(item)
+            self.plot_layers[layer] = []
+
+    def _set_hkl_labels_enabled(self, visible: bool) -> None:
+        self.show_hkl_labels = visible
+        if self.match_candidates:
+            self._recalculate_match_profile()
+            row = self.candidate_table.currentRow()
+            if row >= 0:
+                self._preview_candidate_row(row)
+        elif self.active_overlay_entry_id:
+            row = self.candidate_table.currentRow()
+            if row >= 0:
+                self.active_overlay_entry_id = None
+                self._preview_candidate_row(row)
 
     def _set_grid_visible(self, visible: bool) -> None:
         self.grid_visible = visible
@@ -984,44 +1192,37 @@ class PhaseFinderWindow(AnalysisWindow):
         item = self.match_plot.plot([], [], pen=pg.mkPen("#00000000", width=0.1), name=text)
         self.plot_layers["legend_info"].append(item)
 
+    def _phase_legend_label(self, candidate: dict[str, str]) -> str:
+        phase = self._candidate_phase_name(candidate) or candidate.get("Entry", "") or "phase"
+        source = self._candidate_source(candidate)
+        entry = candidate.get("Entry", "")
+        if source and entry:
+            return f"{phase} {source}#{entry}"
+        if entry:
+            return f"{phase} #{entry}"
+        return phase
+
     def _full_pattern_range(self) -> None:
-        data = self._active_observed_data()
-        if data is not None:
-            try:
-                self.match_plot.setXRange(float(np.nanmin(data[:, 0])), float(np.nanmax(data[:, 0])), padding=0.02)
-                self.match_plot.setYRange(float(np.nanmin(data[:, 1])), float(np.nanmax(data[:, 1])), padding=0.08)
-                return
-            except Exception:
-                pass
-        self.match_plot.enableAutoRange()
+        self._reset_match_plot_view()
 
     def _selected_candidate_row(self) -> dict[str, str] | None:
-        row = self.candidate_table.currentRow()
-        if row < 0:
-            return None
-        return self._candidate_row_values(row)
+        return self.candidate_table.selected_row_values()
 
     def _candidate_row_values(self, row: int) -> dict[str, str]:
-        headers = [
-            self.candidate_table.horizontalHeaderItem(column).text()
-            for column in range(self.candidate_table.columnCount())
-        ]
-        values = {}
-        for column, header in enumerate(headers):
-            item = self.candidate_table.item(row, column)
-            values[header] = item.text().strip() if item is not None else ""
-        return values
+        return self.candidate_table.row_values(row)
 
     def _candidate_rows(self) -> list[dict[str, str]]:
         rows = []
-        for row in range(self.candidate_table.rowCount()):
-            candidate = self._candidate_row_values(row)
+        for candidate in self.candidate_table.all_row_values():
             if candidate.get("Entry") and self._candidate_source(candidate) in {"COD", "USER", "MP", "CCDC"}:
                 rows.append(candidate)
         return rows
 
     def _preview_candidate_row(self, row: int) -> None:
         candidate = self._candidate_row_values(row)
+        if self._candidate_source(candidate) == "RRUFF" and candidate.get("Entry"):
+            self._preview_rruff_reference(candidate, show_errors=False)
+            return
         if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"} or not candidate.get("Entry"):
             return
         self._calculate_candidate_overlay(candidate, show_errors=False)
@@ -1069,6 +1270,9 @@ class PhaseFinderWindow(AnalysisWindow):
         candidate = self._selected_candidate_row()
         if candidate is None:
             QMessageBox.information(self, "Calculate pattern", "Select a structure source row first.")
+            return
+        if self._candidate_source(candidate) == "RRUFF":
+            self._preview_rruff_reference(candidate, show_errors=True)
             return
         self._calculate_candidate_overlay(candidate, show_errors=True)
 
@@ -1140,6 +1344,14 @@ class PhaseFinderWindow(AnalysisWindow):
         candidate = self._selected_candidate_row()
         if candidate is None:
             QMessageBox.information(self, "Working set", "Select a structure source row first.")
+            return
+        if self._candidate_source(candidate) == "RRUFF":
+            self._preview_rruff_reference(candidate, show_errors=True)
+            QMessageBox.information(
+                self,
+                "RRUFF reference",
+                "RRUFF entries are measured reference patterns. They can be previewed as overlays, but not used as calculated CIF phases.",
+            )
             return
         if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC"} or not candidate.get("Entry"):
             QMessageBox.information(self, "Working set", "Only saved COD, CCDC, user, or Materials Project structures can be calculated from CIF for now.")
@@ -1231,6 +1443,18 @@ class PhaseFinderWindow(AnalysisWindow):
         self.match_alignment_scores.pop(key, None)
         self._recalculate_match_profile()
 
+    def _change_selected_match_color(self) -> None:
+        row = self.match_table.currentRow()
+        if row < 0 or row >= len(self.match_candidates):
+            return
+        candidate = self.match_candidates[row]
+        current = QColor(self._phase_color(candidate, row))
+        color = QColorDialog.getColor(current, self, "Select phase color")
+        if not color.isValid():
+            return
+        candidate["_Color"] = color.name()
+        self._recalculate_match_profile()
+
     def _clear_match_list(self) -> None:
         self.match_candidates.clear()
         self.match_structures.clear()
@@ -1300,7 +1524,13 @@ class PhaseFinderWindow(AnalysisWindow):
         observed_y = np.asarray(result.pattern_y, dtype=float)
         observed_ymax = float(np.nanmax(result.pattern_y)) if result.pattern_y else 100.0
         observed_ymin = float(np.nanmin(result.pattern_y)) if result.pattern_y else 0.0
-        colors = ["#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa", "#7b1fa2"]
+        active_plot_context = self._active_pattern_plot_context()
+        active_plot_offset = float(active_plot_context.get("offset", 0.0))
+        observed_y_plot = observed_y + active_plot_offset
+        observed_ymax_plot = observed_ymax + active_plot_offset
+        observed_ymin_plot = observed_ymin + active_plot_offset
+        background_plot = background + active_plot_offset
+        calculated_total_plot = calculated_total + active_plot_offset
         phase_peak_sets: list[tuple[str, str, np.ndarray]] = []
         phase_assignment_styles: dict[str, tuple[str, str]] = {}
         self.match_scales.clear()
@@ -1315,13 +1545,13 @@ class PhaseFinderWindow(AnalysisWindow):
             if candidate is None:
                 continue
             key = self._candidate_key(candidate)
-            color = colors[index % len(colors)]
-            phase_label = self._candidate_phase_name(candidate) or candidate.get("Entry", "")
+            color = self._phase_color(candidate, index)
+            phase_label = self._phase_legend_label(candidate)
             phase_assignment_styles[str(candidate_result.candidate_key)] = (color, phase_label)
             profile = np.asarray(candidate_result.profile, dtype=float)
             self.match_scales[key] = float(candidate_result.scale)
             self.match_quantities[key] = float(candidate_result.quantity_percent)
-            self.match_iic[key] = self._estimate_theoretical_iic(profile)
+            self.match_iic[key] = self._estimate_candidate_corundum_iic(candidate, x)
             self.match_zero_shifts[key] = float(result.global_zero_shift)
             self.match_cell_scales[key] = float(candidate_result.cell_scale)
             self.match_alignment_scores[key] = (
@@ -1330,7 +1560,7 @@ class PhaseFinderWindow(AnalysisWindow):
             contribution_item = plot_profile(
                 self.match_plot,
                 x,
-                background + profile,
+                background_plot + profile,
                 color,
                 f"phase {phase_label}",
                 width=1.5,
@@ -1356,60 +1586,51 @@ class PhaseFinderWindow(AnalysisWindow):
                     candidate_result.peak_intensity or [100.0] * len(candidate_result.peak_two_theta),
                 )
             ]
-            lane_height = max(observed_ymax - observed_ymin, observed_ymax, 1.0) * 0.055
-            lane_gap = lane_height * 0.55
-            lane_top = min(observed_ymin, float(np.nanpercentile(background, 5))) - lane_height * 0.75
-            lane_baseline = lane_top - index * (lane_height + lane_gap)
-            lane_items = plot_phase_marker_lane(
-                self.match_plot,
-                tick_peaks,
-                color,
-                lane_baseline,
-                lane_height,
-                phase_label,
-                float(np.nanmin(x)),
-            )
-            self.plot_layers["phase_ticks"].extend(lane_items)
+            if not self.show_all_selected_patterns:
+                y_span = max(observed_ymax - observed_ymin, observed_ymax, 1.0)
+                lane_height = y_span * 0.038
+                lane_gap = lane_height * 0.85
+                lane_top = min(observed_ymin_plot, float(np.nanpercentile(background_plot, 5))) - y_span * 0.12
+                lane_baseline = lane_top - index * (lane_height + lane_gap)
+                lane_items = plot_phase_marker_lane(
+                    self.match_plot,
+                    tick_peaks,
+                    color,
+                    lane_baseline,
+                    lane_height,
+                    None,
+                    float(np.nanmin(x) + (np.nanmax(x) - np.nanmin(x)) * 0.005),
+                )
+                self.plot_layers["phase_ticks"].extend(lane_items)
 
         background_item = plot_profile(
             self.match_plot,
             x,
-            background,
+            background_plot,
             "#9aa0a6",
             "background",
             width=1.2,
         )
-        sum_item = plot_profile(
-            self.match_plot,
-            x,
-            calculated_total,
-            "#0b8043",
-            "calculated total",
-            width=1.9,
-        )
         self.plot_layers["background"].append(background_item)
-        self.plot_layers["total_profile"].append(sum_item)
         fit_quality = self._profile_fit_quality(observed_y, background, calculated_total)
         explained, total_observed = self._add_peak_coverage_markers(
             x,
-            observed_y,
+            observed_y_plot,
             np.clip(observed_y - background, 0.0, None),
             phase_peak_sets,
             getattr(result, "observed_peaks", []),
             phase_assignment_styles,
         )
-        self.match_plot.setTitle("")
-        self._add_legend_info(
-            f"fit {fit_quality:.0f}% | peaks {explained}/{total_observed} | "
-            f"FWHM {result.fwhm:.3g} | zero {result.global_zero_shift:+.4f}"
+        sum_item = plot_profile(
+            self.match_plot,
+            x,
+            calculated_total_plot,
+            "#0b8043",
+            f"calculated total | fit {fit_quality:.0f}% | peaks {explained}/{total_observed}",
+            width=1.9,
         )
-        if result.candidates:
-            lane_count = len(result.candidates)
-            lane_height = max(observed_ymax - observed_ymin, observed_ymax, 1.0) * 0.055
-            lane_gap = lane_height * 0.55
-            lane_top = min(observed_ymin, float(np.nanpercentile(background, 5))) - lane_height * 0.75
-            lane_bottom = lane_top - (lane_count - 1) * (lane_height + lane_gap) - lane_height * 0.25
-            self.match_plot.setYRange(lane_bottom, observed_ymax, padding=0.08)
+        self.plot_layers["total_profile"].append(sum_item)
+        self.match_plot.setTitle("")
         self._update_match_table()
 
     def _estimate_profile_fwhm(self, x, corrected_y) -> float:
@@ -1437,11 +1658,11 @@ class PhaseFinderWindow(AnalysisWindow):
         y = np.asarray(corrected_y, dtype=float)
         if len(y) < 5 or float(np.nanmax(y)) <= 0:
             return np.array([], dtype=float)
-        prominence = max(float(np.nanmax(y)) * 0.025, float(np.nanstd(y)) * 3.0, 1.0)
-        peak_indices, _properties = find_peaks(y, prominence=prominence, distance=max(3, len(y) // 900))
-        if len(peak_indices) > 120:
+        prominence = max(float(np.nanmax(y)) * 0.04, float(np.nanstd(y)) * 3.5, 1.0)
+        peak_indices, _properties = find_peaks(y, prominence=prominence, distance=max(5, len(y) // 700))
+        if len(peak_indices) > 80:
             heights = y[peak_indices]
-            keep = np.argsort(heights)[-120:]
+            keep = np.argsort(heights)[-80:]
             peak_indices = peak_indices[keep]
         return np.sort(np.asarray(x, dtype=float)[peak_indices])
 
@@ -1476,8 +1697,16 @@ class PhaseFinderWindow(AnalysisWindow):
             return 0, 0
         y_span = max(float(np.nanmax(observed_y)) - float(np.nanmin(observed_y)), float(np.nanmax(observed_y)), 1.0)
         marker_offset = y_span * 0.045
+        marker_cutoff = float(np.nanpercentile(observed_y, 72))
+        unknown_limit = 10
+        unknown_count = 0
         explained = 0
+        considered_positions = []
         for obs_x in peak_positions:
+            y_index = int(np.argmin(np.abs(x - obs_x)))
+            if float(observed_y[y_index]) >= float(np.nanpercentile(observed_y, 60)):
+                considered_positions.append(float(obs_x))
+        for obs_x in considered_positions:
             y_index = int(np.argmin(np.abs(x - obs_x)))
             marker_y = float(observed_y[y_index]) + marker_offset
             best_color = ""
@@ -1502,15 +1731,20 @@ class PhaseFinderWindow(AnalysisWindow):
                 self.plot_layers["coverage_markers"].append(item)
                 explained += 1
             else:
-                item = pg.TextItem("?", color="#6f6f6f", anchor=(0.5, 0.5))
-                font = QFont()
-                font.setPointSize(9)
-                font.setWeight(QFont.Weight.DemiBold)
-                item.setFont(font)
-                item.setPos(float(obs_x), marker_y)
+                if unknown_count >= unknown_limit or float(observed_y[y_index]) < marker_cutoff:
+                    continue
+                item = pg.ScatterPlotItem(
+                    [float(obs_x)],
+                    [marker_y],
+                    pen=pg.mkPen("#6f6f6f", width=1.0),
+                    brush=pg.mkBrush("#ffffff"),
+                    size=8,
+                    symbol="t",
+                )
                 self.match_plot.addItem(item)
-                self.plot_layers["coverage_markers"].append(item)
-        return explained, int(len(peak_positions))
+                self.plot_layers["unknown_peaks"].append(item)
+                unknown_count += 1
+        return explained, int(len(considered_positions))
 
     def _add_assignment_markers(
         self,
@@ -1521,13 +1755,21 @@ class PhaseFinderWindow(AnalysisWindow):
     ) -> tuple[int, int]:
         y_span = max(float(np.nanmax(observed_y)) - float(np.nanmin(observed_y)), float(np.nanmax(observed_y)), 1.0)
         marker_offset = y_span * 0.05
+        unknown_cutoff = float(np.nanpercentile(observed_y, 74))
+        unknown_count = 0
         explained = 0
         legend_marker_names: set[str] = set()
+        peak_records = []
         for observed_peak in observed_peaks:
             obs_x = float(observed_peak.two_theta)
             if not np.isfinite(obs_x):
                 continue
             y_index = int(np.argmin(np.abs(x - obs_x)))
+            peak_records.append((float(observed_y[y_index]), observed_peak, y_index))
+        peak_records = sorted(peak_records, key=lambda item: item[0], reverse=True)[:80]
+        peak_records = sorted(peak_records, key=lambda item: float(item[1].two_theta))
+        for _peak_height, observed_peak, y_index in peak_records:
+            obs_x = float(observed_peak.two_theta)
             marker_y = float(observed_y[y_index]) + marker_offset
             assignments = list(getattr(observed_peak, "assignments", []) or [])
             status = getattr(getattr(observed_peak, "status", ""), "value", getattr(observed_peak, "status", ""))
@@ -1548,17 +1790,20 @@ class PhaseFinderWindow(AnalysisWindow):
                 )
                 self.match_plot.addItem(item)
                 self.plot_layers["coverage_markers"].append(item)
-                label = self._assignment_marker_label(assignments)
-                if label:
-                    text = pg.TextItem(label, color="#111111", anchor=(0.5, 1.05))
-                    font = QFont()
-                    font.setPointSize(9)
-                    font.setWeight(QFont.Weight.DemiBold)
-                    text.setFont(font)
-                    text.setPos(obs_x, marker_y + marker_offset * 0.35)
-                    self.match_plot.addItem(text)
-                    self.plot_layers["peak_labels"].append(text)
+                if self.show_hkl_labels:
+                    label = self._assignment_marker_label(assignments)
+                    if label:
+                        text = pg.TextItem(label, color="#111111", anchor=(0.5, 1.05))
+                        font = QFont()
+                        font.setPointSize(8)
+                        font.setWeight(QFont.Weight.DemiBold)
+                        text.setFont(font)
+                        text.setPos(obs_x, marker_y + marker_offset * 0.3)
+                        self.match_plot.addItem(text)
+                        self.plot_layers["peak_labels"].append(text)
             else:
+                if unknown_count >= 10 or float(observed_y[y_index]) < unknown_cutoff:
+                    continue
                 item = pg.ScatterPlotItem(
                     [obs_x],
                     [marker_y],
@@ -1571,15 +1816,8 @@ class PhaseFinderWindow(AnalysisWindow):
                 legend_marker_names.add("unknown peak")
                 self.match_plot.addItem(item)
                 self.plot_layers["unknown_peaks"].append(item)
-                text = pg.TextItem("?", color="#555555", anchor=(0.5, 1.05))
-                font = QFont()
-                font.setPointSize(10)
-                font.setWeight(QFont.Weight.DemiBold)
-                text.setFont(font)
-                text.setPos(obs_x, marker_y + marker_offset * 0.25)
-                self.match_plot.addItem(text)
-                self.plot_layers["unknown_peaks"].append(text)
-        return explained, int(len(observed_peaks))
+                unknown_count += 1
+        return explained, int(len(peak_records))
 
     def _primary_assignment(self, assignments):
         return max(
@@ -1605,6 +1843,13 @@ class PhaseFinderWindow(AnalysisWindow):
             return words[0][:1].upper()
         return "".join(word[:1].upper() for word in words[:2])
 
+    def _phase_lane_label(self, candidate: dict[str, str]) -> str:
+        phase = self._candidate_phase_name(candidate) or "phase"
+        entry = candidate.get("Entry", "")
+        source = self._candidate_source(candidate)
+        code = f"{source}#{entry}" if source and entry else entry
+        return f"{phase}\n{code}" if code else phase
+
     def _add_peak_residual_links(
         self,
         peaks,
@@ -1614,6 +1859,7 @@ class PhaseFinderWindow(AnalysisWindow):
         max_delta: float = 0.45,
         min_delta: float = 0.08,
         limit: int = 36,
+        layer: str = "peak_links",
     ) -> None:
         if len(observed_positions) == 0:
             return
@@ -1640,7 +1886,7 @@ class PhaseFinderWindow(AnalysisWindow):
                 [y0, link_y, link_y, y1],
                 pen=pen,
             )
-            self.plot_layers["peak_links"].append(line_item)
+            self.plot_layers[layer].append(line_item)
 
     def _estimate_phase_alignment(self, peaks, observed_positions: np.ndarray, structure) -> PhaseAlignmentEstimate:
         if len(observed_positions) == 0 or not peaks:
@@ -1713,42 +1959,186 @@ class PhaseFinderWindow(AnalysisWindow):
             return 0.0
         return area / peak
 
-    def _update_match_table(self) -> None:
-        self.match_table.setRowCount(len(self.match_candidates))
-        colors = ["red", "blue", "green", "orange", "purple", "violet"]
-        for row, candidate in enumerate(self.match_candidates):
-            key = self._candidate_key(candidate)
-            values = [
-                colors[row % len(colors)],
-                self._candidate_phase_name(candidate),
-                candidate.get("Formula", ""),
-                self.match_alignment_scores.get(key, ""),
-                f"{self.match_scales.get(key, 0.0):.3g}",
-                f"{self.match_quantities.get(key, 0.0):.1f}",
-                f"{self.match_zero_shifts.get(key, 0.0):+.4f}",
-                f"{self.match_cell_scales.get(key, 1.0):.6f}",
-                f"{self.match_iic.get(key, 0.0):.3g}",
-            ]
-            for column, value in enumerate(values):
-                self.match_table.setItem(row, column, QTableWidgetItem(value))
-        self.match_table.resizeColumnsToContents()
-        self.match_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-
-    def _calculate_candidate_overlay(self, candidate: dict[str, str], show_errors: bool) -> None:
-        entry_id = candidate.get("Entry", "")
-        if entry_id and entry_id == self.active_overlay_entry_id:
-            return
+    def _estimate_candidate_corundum_iic(self, candidate: dict[str, str], x_grid: np.ndarray | None = None) -> float:
         try:
             cif_path = self._candidate_cif_path(candidate)
             _phase, structure = create_phase_from_cif(cif_path)
-            self._calculate_structure_overlay(structure)
+            return self._estimate_structure_corundum_iic(structure, x_grid=x_grid)
+        except Exception:
+            return 0.0
+
+    def _estimate_structure_corundum_iic(self, structure, x_grid: np.ndarray | None = None) -> float:
+        wavelength = float(getattr(structure, "wavelength", None) or CU_KA1_WAVELENGTH)
+        if x_grid is not None and len(x_grid):
+            two_theta_min = float(np.nanmin(x_grid))
+            two_theta_max = float(np.nanmax(x_grid))
+        else:
+            two_theta_min = 5.0
+            two_theta_max = 120.0
+        try:
+            sample_peaks = self.calculated_pattern_service.calculate_sticks(
+                structure,
+                two_theta_min=two_theta_min,
+                two_theta_max=two_theta_max,
+                wavelength=wavelength,
+                use_lp=True,
+            )
+            corundum_peaks = self._corundum_peaks(wavelength, two_theta_min, two_theta_max)
+        except Exception:
+            return 0.0
+        sample_total = self._raw_peak_total(sample_peaks)
+        corundum_total = self._raw_peak_total(corundum_peaks)
+        if sample_total <= 0 or corundum_total <= 0:
+            return 0.0
+        correction = self._corundum_absorption_correction(getattr(structure, "formula", ""))
+        value = (sample_total / corundum_total) * correction
+        return float(np.clip(value, 0.0, 99.9))
+
+    def _corundum_absorption_correction(self, formula: str) -> float:
+        sample_proxy = self._formula_absorption_proxy(formula)
+        corundum_proxy = self._formula_absorption_proxy("Al2O3")
+        if sample_proxy <= 0 or corundum_proxy <= 0:
+            return 1.0
+        return float(np.clip(corundum_proxy / sample_proxy, 0.02, 8.0))
+
+    def _formula_absorption_proxy(self, formula: str) -> float:
+        counts = self._formula_counts(formula)
+        if not counts:
+            return 0.0
+        mass = sum(ATOMIC_WEIGHTS.get(element, 0.0) * count for element, count in counts.items())
+        if mass <= 0:
+            return 0.0
+        weighted_z = sum((ATOMIC_NUMBERS.get(element, 0) ** 3.0) * count for element, count in counts.items())
+        return float(weighted_z / mass)
+
+    def _formula_counts(self, formula: str) -> dict[str, float]:
+        counts: dict[str, float] = {}
+        if not formula:
+            return counts
+        for element, amount in re.findall(r"([A-Z][a-z]?|D)([0-9]*\.?[0-9]*)", formula):
+            if element not in ATOMIC_NUMBERS:
+                continue
+            counts[element] = counts.get(element, 0.0) + (float(amount) if amount else 1.0)
+        return counts
+
+    def _corundum_peaks(self, wavelength: float, two_theta_min: float, two_theta_max: float):
+        key = (round(float(wavelength), 6), round(float(two_theta_min), 3), round(float(two_theta_max), 3))
+        if key not in self._corundum_peak_cache:
+            self._corundum_peak_cache[key] = self.calculated_pattern_service.calculate_sticks(
+                self._corundum_structure(),
+                two_theta_min=two_theta_min,
+                two_theta_max=two_theta_max,
+                wavelength=wavelength,
+                use_lp=True,
+            )
+        return self._corundum_peak_cache[key]
+
+    def _corundum_structure(self) -> Structure:
+        structure = Structure.create("Corundum")
+        structure.formula = "Al2O3"
+        structure.space_group = "R -3 c"
+        structure.cell = CellParameters(a=4.759, b=4.759, c=12.991, alpha=90.0, beta=90.0, gamma=120.0)
+        structure.symops = [
+            "x,y,z",
+            "-y,x-y,z",
+            "-x+y,-x,z",
+            "y,x,-z+1/2",
+            "x-y,-y,-z+1/2",
+            "-x,-x+y,-z+1/2",
+            "x+2/3,y+1/3,z+1/3",
+            "-y+2/3,x-y+1/3,z+1/3",
+            "-x+y+2/3,-x+1/3,z+1/3",
+            "y+2/3,x+1/3,-z+5/6",
+            "x-y+2/3,-y+1/3,-z+5/6",
+            "-x+2/3,-x+y+1/3,-z+5/6",
+            "x+1/3,y+2/3,z+2/3",
+            "-y+1/3,x-y+2/3,z+2/3",
+            "-x+y+1/3,-x+2/3,z+2/3",
+            "y+1/3,x+2/3,-z+7/6",
+            "x-y+1/3,-y+2/3,-z+7/6",
+            "-x+1/3,-x+y+2/3,-z+7/6",
+        ]
+        structure.atoms = [
+            AtomSite(label="Al", element="Al", x=0.0, y=0.0, z=0.3522, occupancy=1.0),
+            AtomSite(label="O", element="O", x=0.306, y=0.0, z=0.25, occupancy=1.0),
+        ]
+        return structure
+
+    def _raw_peak_total(self, peaks) -> float:
+        return float(
+            sum(max(float(getattr(peak, "raw_intensity", 0.0) or getattr(peak, "intensity", 0.0)), 0.0) for peak in peaks)
+        )
+
+    def _update_match_table(self) -> None:
+        rows = []
+        for row, candidate in enumerate(self.match_candidates):
+            key = self._candidate_key(candidate)
+            rows.append([
+                self._phase_color(candidate, row),
+                self._phase_legend_label(candidate),
+                self.match_alignment_scores.get(key, ""),
+                f"{self.match_quantities.get(key, 0.0):.1f}",
+                f"{self.match_iic.get(key, 0.0):.3g}",
+            ])
+        self.match_table.set_rows(rows)
+
+    def _phase_color(self, candidate: dict[str, str], index: int) -> str:
+        palette = ["#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa", "#7b1fa2"]
+        color = candidate.get("_Color", "")
+        if not QColor(color).isValid():
+            color = palette[index % len(palette)]
+            candidate["_Color"] = color
+        return color
+
+    def _calculate_candidate_overlay(self, candidate: dict[str, str], show_errors: bool) -> None:
+        entry_id = candidate.get("Entry", "")
+        view_range = self._plot_view_range()
+        try:
+            cif_path = self._candidate_cif_path(candidate)
+            _phase, structure = create_phase_from_cif(cif_path)
+            self._calculate_structure_overlay(structure, preview=True)
+            self._restore_plot_view_range(view_range)
             self.active_overlay_entry_id = entry_id or None
         except Exception as exc:
             if show_errors:
                 QMessageBox.warning(self, "Calculate pattern failed", str(exc))
 
-    def _calculate_structure_overlay(self, structure) -> None:
-        self._clear_calculated_overlay()
+    def _preview_rruff_reference(self, candidate: dict[str, str], show_errors: bool) -> None:
+        entry_id = candidate.get("Entry", "")
+        if not entry_id:
+            return
+        try:
+            pattern_path = self.rruff.pattern_path(entry_id)
+            if pattern_path is None:
+                raise ValueError("RRUFF reference pattern is not indexed or the XY file is missing.")
+            data = load_xy(pattern_path)
+            observed = self._active_observed_data()
+            y = np.asarray(data[:, 1], dtype=float)
+            if observed is not None and len(observed):
+                observed_max = max(float(np.nanmax(observed[:, 1])), 1.0)
+                y = scale_profile_to_reference(y, observed_max * 0.92)
+            self._clear_calculated_overlay()
+            label = self._phase_legend_label(candidate)
+            item = plot_profile(
+                self.match_plot,
+                np.asarray(data[:, 0], dtype=float),
+                y,
+                "#1a73e8",
+                f"RRUFF reference {label}",
+                width=1.7,
+            )
+            self.plot_layers["calculated_profile"].append(item)
+            self.match_plot.setTitle(f"RRUFF reference overlay: {label}", color="#111111", size="13pt")
+            self.active_overlay_entry_id = entry_id
+        except Exception as exc:
+            if show_errors:
+                QMessageBox.warning(self, "RRUFF preview failed", str(exc))
+
+    def _calculate_structure_overlay(self, structure, preview: bool = False) -> None:
+        if preview:
+            self._clear_preview_overlay()
+        else:
+            self._clear_calculated_overlay()
         x_grid = None
         observed_ymax = None
         observed_ymin = None
@@ -1784,39 +2174,86 @@ class PhaseFinderWindow(AnalysisWindow):
         if observed_ymax is not None:
             baseline = float(np.nanpercentile(background, 50))
             y = scale_profile_to_reference(y, max(observed_ymax - baseline, 1.0))
-            background_item = plot_profile(
+            if not preview:
+                active_plot_offset = float(self._active_pattern_plot_context().get("offset", 0.0))
+                background_item = plot_profile(
+                    self.match_plot,
+                    x,
+                    background + active_plot_offset,
+                    "#9aa0a6",
+                    "background",
+                    width=0.8,
+                )
+                self.plot_layers["calculated_profile"].append(background_item)
+        else:
+            y = scale_profile_to_reference(y, 100.0)
+        color = "#1a73e8" if preview else "#d93025"
+        active_plot_context = self._active_pattern_plot_context()
+        active_plot_offset = float(active_plot_context.get("offset", 0.0))
+        marker_top = (
+            observed_ymax + active_plot_offset
+            if observed_ymax is not None else float(np.nanmax(y) if np.nanmax(y) > 0 else 100.0)
+        )
+        marker_bottom = (
+            observed_ymin + active_plot_offset
+            if observed_ymin is not None else float(np.nanmin(background) + active_plot_offset)
+        )
+        y_span = max(marker_top - marker_bottom, float(active_plot_context.get("height", 0.0)), 1.0)
+        if preview:
+            preview_baseline = np.full_like(x_grid, marker_bottom, dtype=float)
+            preview_height = y_span
+            stick_item = plot_peak_intensity_sticks(
+                self.match_plot,
+                peaks,
+                color,
+                x_grid,
+                preview_baseline,
+                preview_height,
+                f"preview peaks {structure.name}",
+                width=3.0,
+            )
+            self.plot_layers["preview_peak_positions"].append(stick_item)
+            if self.show_hkl_labels:
+                hkl_items = add_hkl_labels(
+                    self.match_plot,
+                    peaks,
+                    color,
+                    marker_bottom,
+                    preview_height,
+                    limit=18,
+                    above_peaks=True,
+                )
+                self.plot_layers["preview_hkl"].extend(hkl_items)
+            self.match_plot.setTitle(
+                f"Phase Finder: peak preview for {structure.name} ({len(peaks)} peaks, {alignment.status} {alignment.matched_peaks}/{alignment.total_peaks})",
+                color="#111111",
+                size="13pt",
+            )
+            return
+        if not preview:
+            calc_item = plot_profile(
                 self.match_plot,
                 x,
-                background,
-                "#9aa0a6",
-                "background",
-                width=0.8,
+                y + background + active_plot_offset,
+                color,
+                f"calculated total {structure.name}",
+                width=1.8,
             )
-            self.plot_layers["calculated_profile"].append(background_item)
-        calc_item = plot_profile(
-            self.match_plot,
-            x,
-            y + background,
-            "#d93025",
-            f"calculated total {structure.name}",
-            width=1.8,
-        )
-        self.plot_layers["calculated_profile"].append(calc_item)
-        marker_top = observed_ymax if observed_ymax is not None else float(np.nanmax(y) if np.nanmax(y) > 0 else 100.0)
-        baseline = float(np.nanpercentile(background, 50))
-        peak_scale = (marker_top - baseline) if marker_top > baseline else marker_top
-        stick_item = plot_hkl_sticks(
-            self.match_plot,
-            peaks,
-            "#1a73e8",
-            baseline,
-            peak_scale,
-            label=f"peaks {structure.name}",
-            width=1.8,
-        )
-        tick_item = plot_hkl_ticks(self.match_plot, peaks, "#d93025", baseline, peak_scale)
-        self.plot_layers["peak_positions"].extend([stick_item, tick_item])
-        if observed is not None and len(observed_peak_positions):
+            self.plot_layers["calculated_profile"].append(calc_item)
+        lane_height = y_span * (0.045 if observed is not None else 0.032)
+        lane_baseline = marker_bottom - y_span * (0.13 if observed is not None else 0.18)
+        if not self.show_all_selected_patterns:
+            lane_items = plot_phase_marker_lane(
+                self.match_plot,
+                peaks,
+                color,
+                lane_baseline,
+                lane_height,
+                None,
+                float(np.nanmin(x) + (np.nanmax(x) - np.nanmin(x)) * 0.005),
+            )
+            self.plot_layers["preview_peak_positions" if preview else "peak_positions"].extend(lane_items)
+        if not preview and observed is not None and len(observed_peak_positions):
             self._add_peak_residual_links(
                 peaks,
                 np.asarray(observed[:, 0], dtype=float),
@@ -1824,21 +2261,18 @@ class PhaseFinderWindow(AnalysisWindow):
                 observed_peak_positions,
                 max_delta=0.45,
                 limit=36,
+                layer="peak_links",
             )
-        self.plot_layers["hkl"].extend(
-            add_hkl_labels(
+        if self.show_hkl_labels and not self.show_all_selected_patterns:
+            hkl_items = add_hkl_labels(
                 self.match_plot,
                 peaks,
-                "#b3261e",
-                baseline,
-                peak_scale,
-                above_peaks=True,
-                limit=45,
+                color,
+                lane_baseline - lane_height * 0.2,
+                lane_height,
+                limit=18,
             )
-        )
-        self.match_plot.setXRange(float(np.nanmin(x_grid)), float(np.nanmax(x_grid)), padding=0.02)
-        if observed_ymin is not None and observed_ymax is not None:
-            self.match_plot.setYRange(min(observed_ymin, baseline - peak_scale * 0.05), observed_ymax, padding=0.08)
+            self.plot_layers["preview_hkl" if preview else "hkl"].extend(hkl_items)
         self.match_plot.setTitle(
             f"Phase Finder: calculated overlay for {structure.name} ({len(peaks)} peaks, FWHM {profile_fwhm:.3g}, {alignment.status} {alignment.matched_peaks}/{alignment.total_peaks})",
             color="#111111",
@@ -1848,36 +2282,26 @@ class PhaseFinderWindow(AnalysisWindow):
     def _database_tab(self) -> QWidget:
         mp_status = self.materials_project.status()
         ccdc_status = self.ccdc.status()
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        local_row = self.local_phase_cache.status_row()
+        rruff_row = self.rruff.status_row()
         rows = [
-            [
-                "User phase library",
-                local_row[1],
-                local_row[2],
-                local_row[3],
-                local_row[4],
-                "sqlite+cif",
-                local_row[6],
-            ],
+            self._database_summary_row(self._user_phase_library_status_row()),
             [
                 "COD online",
                 "optional",
                 "download CIF to user library",
-                "",
-                "",
-                "web export",
                 "crystallography.net/cod",
             ],
+            [
+                "COD local/bulk",
+                "optional",
+                "index downloaded COD CIF folder/archive",
+                str(self.local_phase_cache.root),
+            ],
+            self._database_summary_row(rruff_row),
             [
                 "CCDC / CSD",
                 "yes" if ccdc_status.configured else "not configured",
                 ccdc_status.label,
-                "",
-                "",
-                "api + DOI web export",
                 "CSD Python API / ccdc.cam.ac.uk",
             ],
         ]
@@ -1886,57 +2310,36 @@ class PhaseFinderWindow(AnalysisWindow):
                 "Materials Project",
                 "yes" if mp_status.configured else "not configured",
                 mp_status.label,
-                "",
-                "",
-                "api",
                 "user API key",
             ]
         )
-        self.database_table = self._table(
-            ["Source", "Available", "Label", "Files", "Size MB", "Mode", "Location"],
+        source_states = {
+            "sources/user_library": bool(self.settings.value("sources/user_library", True, type=bool)),
+            "sources/cod_local": bool(self.settings.value("sources/cod_local", True, type=bool)),
+            "sources/cod_online": bool(self.settings.value("sources/cod_online", True, type=bool)),
+            "sources/rruff": bool(self.settings.value("sources/rruff", False, type=bool)),
+        }
+        self.database_panel = DatabasePanelWidget(
             rows,
+            source_states,
+            bool(self.settings.value("materials_project/enabled", False, type=bool)),
+            self._materials_project_status_text(),
+            self.materials_project.api_key,
         )
-        layout.addWidget(self.database_table)
-
-        self.use_materials_project_checkbox = QCheckBox("Use Materials Project in phase search")
-        self.use_materials_project_checkbox.setChecked(
-            bool(self.settings.value("materials_project/enabled", False, type=bool))
-        )
-        layout.addWidget(self.use_materials_project_checkbox)
-
-        self.mp_status_label = QLabel(self._materials_project_status_text())
-        layout.addWidget(self.mp_status_label)
-
-        key_row = QWidget()
-        key_layout = QHBoxLayout(key_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
-        self.mp_api_key_input = QLineEdit()
-        self.mp_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.mp_api_key_input.setPlaceholderText("Materials Project API key")
-        self.mp_api_key_input.setText(self.materials_project.api_key)
-        save_key = QPushButton("Save API key")
-        save_key.clicked.connect(self._save_materials_project_settings)
-        key_layout.addWidget(self.mp_api_key_input, 1)
-        key_layout.addWidget(save_key)
-        layout.addWidget(key_row)
-
-        build_index = QPushButton("Rebuild user phase library index")
-        build_index.clicked.connect(self._build_local_phase_cache_index)
-        layout.addWidget(build_index)
-
-        layout.addWidget(QLabel("Data sources"))
-        layout.addWidget(
-            QLabel(
-                "Standalone phase search uses the user phase library plus optional exports from COD online "
-                "and Materials Project."
-            )
-        )
-        layout.addStretch(1)
-        return widget
+        self.database_panel.sourceToggled.connect(self._set_source_enabled)
+        self.database_panel.materialsProjectToggled.connect(self._set_materials_project_enabled)
+        self.database_panel.saveMaterialsProjectRequested.connect(self._save_materials_project_settings)
+        self.database_panel.rebuildUserIndexRequested.connect(self._build_local_phase_cache_index)
+        self.database_panel.indexCodFolderRequested.connect(self._index_cod_cif_folder)
+        self.database_panel.indexCodZipRequested.connect(self._index_cod_zip_archive)
+        self.database_panel.downloadCodArchiveRequested.connect(self._download_cod_archive_from_url)
+        self.database_panel.downloadRruffRequested.connect(self._download_rruff_database)
+        self.database_panel.indexRruffRequested.connect(self._index_rruff_database)
+        return self.database_panel
 
     def _show_database_settings_tab(self) -> None:
         for index in range(self.right_tabs.count()):
-            if self.right_tabs.tabText(index) == "References":
+            if self.right_tabs.tabText(index) == "Databases":
                 self.right_tabs.setCurrentIndex(index)
                 return
 
@@ -1946,37 +2349,76 @@ class PhaseFinderWindow(AnalysisWindow):
         enabled_text = "enabled" if enabled else "disabled"
         return f"Materials Project: {status.label}; search {enabled_text}."
 
+    def _set_source_enabled(self, setting_key: str, checked: bool) -> None:
+        self.settings.setValue(setting_key, checked)
+        if self.database_panel is not None:
+            self.database_panel.set_source_checked(setting_key, checked)
+
+    def _set_materials_project_enabled(self, checked: bool) -> None:
+        self.settings.setValue("materials_project/enabled", checked)
+        if self.database_panel is not None:
+            self.database_panel.set_materials_project_status(self._materials_project_status_text())
+
     def _save_materials_project_settings(self) -> None:
-        api_key = self.mp_api_key_input.text().strip() if self.mp_api_key_input is not None else ""
-        enabled = bool(self.use_materials_project_checkbox and self.use_materials_project_checkbox.isChecked())
+        api_key = self.database_panel.api_key() if self.database_panel is not None else ""
+        enabled = self.database_panel.materials_project_enabled() if self.database_panel is not None else False
         self.settings.setValue("materials_project/api_key", api_key)
         self.settings.setValue("materials_project/enabled", enabled)
         self.materials_project = MaterialsProjectService(api_key)
-        if self.mp_status_label is not None:
-            self.mp_status_label.setText(self._materials_project_status_text())
+        self.candidate_search_service.materials_project = self.materials_project
+        if self.database_panel is not None:
+            self.database_panel.set_materials_project_status(self._materials_project_status_text())
         self._refresh_materials_project_database_row()
 
     def _refresh_materials_project_database_row(self) -> None:
-        if self.database_table is None:
+        if self.database_panel is None:
             return
         status = self.materials_project.status()
-        for row in range(self.database_table.rowCount()):
-            name_item = self.database_table.item(row, 0)
-            if name_item is None or name_item.text() != "Materials Project":
-                continue
-            values = [
+        self.database_panel.update_row(
+            "Materials Project",
+            [
                 "Materials Project",
                 "yes" if status.configured else "not configured",
                 status.label,
-                "",
-                "",
-                "api",
                 "user API key",
-            ]
-            for column, value in enumerate(values):
-                self.database_table.setItem(row, column, QTableWidgetItem(value))
-            self.database_table.resizeColumnsToContents()
+            ],
+        )
+
+    def _refresh_database_rows(self) -> None:
+        if self.database_panel is None:
             return
+        replacements = {
+            "User phase library": self._database_summary_row(self._user_phase_library_status_row()),
+            "RRUFF powder": self._database_summary_row(self.rruff.status_row()),
+        }
+        for source_name, values in replacements.items():
+            self.database_panel.update_row(source_name, values)
+        self._refresh_materials_project_database_row()
+
+    def _user_phase_library_status_row(self) -> list[str]:
+        local_row = self.local_phase_cache.status_row()
+        return [
+            "User phase library",
+            local_row[1],
+            local_row[2],
+            local_row[3],
+            local_row[4],
+            "sqlite+cif",
+            local_row[6],
+        ]
+
+    def _database_summary_row(self, row: list[str]) -> list[str]:
+        source = row[0] if len(row) > 0 else ""
+        state = row[1] if len(row) > 1 else ""
+        label = row[2] if len(row) > 2 else ""
+        files = row[3] if len(row) > 3 else ""
+        size = row[4] if len(row) > 4 else ""
+        location = row[6] if len(row) > 6 else (row[3] if len(row) > 3 else "")
+        details = label
+        if files or size:
+            suffix = ", ".join(part for part in [f"{files} files" if files else "", f"{size} MB" if size else ""] if part)
+            details = f"{label} ({suffix})" if label else suffix
+        return [source, state, details, location]
 
     def _build_local_phase_cache_index(self) -> None:
         try:
@@ -1984,7 +2426,113 @@ class PhaseFinderWindow(AnalysisWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Build local index failed", str(exc))
             return
+        self._refresh_database_rows()
         QMessageBox.information(self, "Build local index", f"Indexed {count} saved CIF files.")
+
+    def _index_cod_cif_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select COD CIF folder", str(Path.home()))
+        if not folder:
+            return
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            count = self.local_phase_cache.index_cif_folder(folder, source="COD")
+        except Exception as exc:
+            QMessageBox.warning(self, "Index COD folder failed", str(exc))
+            return
+        finally:
+            self.unsetCursor()
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Index COD folder", f"Indexed {count} COD CIF files.")
+
+    def _index_cod_zip_archive(self) -> None:
+        archive_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Select COD ZIP archive",
+            str(Path.home()),
+            "ZIP archive (*.zip);;All files (*.*)",
+        )
+        if not archive_path:
+            return
+        target_root = self.local_phase_cache.root / "cod_bulk_cif"
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            count = self._extract_and_index_cif_zip(Path(archive_path), target_root, source="COD")
+        except Exception as exc:
+            QMessageBox.warning(self, "Index COD ZIP failed", str(exc))
+            return
+        finally:
+            self.unsetCursor()
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Index COD ZIP", f"Indexed {count} COD CIF files.")
+
+    def _download_cod_archive_from_url(self) -> None:
+        url, ok = QInputDialog.getText(
+            self,
+            "Download COD archive",
+            "COD ZIP archive URL:",
+        )
+        if not ok or not url.strip():
+            return
+        output_dir = self.local_phase_cache.root / "downloads"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / Path(url.strip().rstrip("/")).name
+        if output_path.suffix.lower() != ".zip":
+            output_path = output_path.with_suffix(".zip")
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            with urlopen(url.strip(), timeout=300) as response:
+                with output_path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+        except Exception as exc:
+            QMessageBox.warning(self, "Download COD archive failed", str(exc))
+            return
+        finally:
+            self.unsetCursor()
+        QMessageBox.information(self, "Download COD archive", f"Saved archive:\n{output_path}")
+
+    def _extract_and_index_cif_zip(self, archive_path: Path, target_root: Path, source: str) -> int:
+        target_root.mkdir(parents=True, exist_ok=True)
+        count = 0
+        with ZipFile(archive_path) as archive:
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+                member_path = Path(member.filename)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    continue
+                if member_path.suffix.lower() != ".cif":
+                    continue
+                target_path = target_root / member_path
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source_handle, target_path.open("wb") as target_handle:
+                    shutil.copyfileobj(source_handle, target_handle)
+                self.local_phase_cache.index_cif(target_path, source=source, entry_id=target_path.stem)
+                count += 1
+        return count
+
+    def _download_rruff_database(self) -> None:
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            archive_path = self.rruff.download_powder_archive(RRUFF_POWDER_XY_PROCESSED_URL)
+        except Exception as exc:
+            QMessageBox.warning(self, "Download RRUFF failed", str(exc))
+            return
+        finally:
+            self.unsetCursor()
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Download RRUFF", f"Saved archive:\n{archive_path}")
+
+    def _index_rruff_database(self) -> None:
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            count = self.rruff.index_powder_archive()
+        except Exception as exc:
+            QMessageBox.warning(self, "Index RRUFF failed", str(exc))
+            return
+        finally:
+            self.unsetCursor()
+        self._refresh_database_rows()
+        QMessageBox.information(self, "Index RRUFF", f"Indexed {count} RRUFF reference patterns.")
 
     def _search_pdf2_text(self) -> None:
         query = self.search_input.text().strip() if self.search_input is not None else ""
@@ -1995,65 +2543,13 @@ class PhaseFinderWindow(AnalysisWindow):
         if not query:
             self._set_candidate_rows([["", "", "", "Enter name, formula, DOI, or entry id", "", ""]])
             return
-
-        rows = []
-        doi = extract_doi(query)
-        if doi:
-            try:
-                entry = self._download_ccdc_doi_to_cache(doi)
-                rows.extend(self._cache_rows([entry]))
-            except Exception as exc:
-                rows.append(["CCDC", doi, "", "CCDC CIF not available", "", str(exc)])
-
-        ccdc_key = self._search_cache_key("text", query)
-        if not self.local_phase_cache.search_is_fresh("CCDC", ccdc_key):
-            try:
-                ccdc_entries = self.ccdc.search_text(
-                    query=query,
-                    target_dir=self.local_phase_cache.root / "ccdc_cif",
-                    limit=80,
-                )
-                self._index_ccdc_entries(ccdc_entries)
-                self.local_phase_cache.mark_search("CCDC", ccdc_key)
-                rows = self._dedupe_candidate_rows(rows + self._cache_rows(self._search_local_cache(text=query)))
-            except Exception as exc:
-                if not rows and self.ccdc.status().installed:
-                    rows.append(["CCDC", "", "", "CSD search failed", "", str(exc)])
-
-        if self._local_cache_enabled():
-            rows.extend(self._cache_rows(self._search_local_cache(text=query)))
-
-        if self._cod_online_enabled():
-            cod_key = self._search_cache_key("text", query, self._excluded_elements())
-            if not self.local_phase_cache.search_is_fresh("COD", cod_key):
-                try:
-                    cod_entries = self.cod_online.search_text(query=query, limit=100)
-                    cod_entries = self._filter_cod_entries(cod_entries)
-                    self.local_phase_cache.upsert_cod_entries(cod_entries)
-                    errors = self._download_cod_entries_to_cache(cod_entries)
-                    self.local_phase_cache.mark_search("COD", cod_key)
-                    rows = self._dedupe_candidate_rows(rows + self._cache_rows(self._search_local_cache(text=query)))
-                    if errors:
-                        rows.append(["COD", "", "", f"{errors} COD CIF downloads failed", "", ""])
-                except Exception:
-                    pass
-
-        if self._materials_project_enabled():
-            mp_key = self._search_cache_key("text", query)
-            if not self.local_phase_cache.search_is_fresh("MP", mp_key):
-                try:
-                    mp_entries = self.materials_project.search_text(query=query, limit=80)
-                    self._download_mp_entries_to_cache(mp_entries)
-                    self.local_phase_cache.mark_search("MP", mp_key)
-                    rows = self._dedupe_candidate_rows(rows + self._cache_rows(self._search_local_cache(text=query)))
-                except Exception as exc:
-                    if not rows:
-                        rows.append(["MP", "", "", "Materials Project search failed", "", str(exc)])
-
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            rows = self.candidate_search_service.search_text(query, self._candidate_search_options())
+        finally:
+            self.unsetCursor()
         if rows:
-            self._set_candidate_rows(
-                self._dedupe_candidate_rows(self._filter_candidate_rows_by_excluded_elements(rows))
-            )
+            self._set_candidate_rows(rows)
             return
 
         self._set_candidate_rows([["", "", "", f"No saved/COD/CCDC/MP entries found for: {query}", "", ""]])
@@ -2068,201 +2564,52 @@ class PhaseFinderWindow(AnalysisWindow):
         if not self.selected_elements:
             self._search_pdf2_text()
             return
-        rows = []
-        if self._local_cache_enabled():
-            rows.extend(self._cache_rows(self._search_local_cache(elements=list(self.selected_element_order))))
-        if self._cod_online_enabled():
-            cod_key = self._search_cache_key("elements", list(self.selected_element_order), self._excluded_elements())
-            if not self.local_phase_cache.search_is_fresh("COD", cod_key):
-                try:
-                    cod_entries = self.cod_online.search_elements(
-                        list(self.selected_element_order),
-                        excluded_elements=self._excluded_elements(),
-                        limit=100,
-                    )
-                    cod_entries = self._filter_cod_entries(cod_entries)
-                    self.local_phase_cache.upsert_cod_entries(cod_entries)
-                    errors = self._download_cod_entries_to_cache(cod_entries)
-                    self.local_phase_cache.mark_search("COD", cod_key)
-                    rows = self._cache_rows(self._search_local_cache(elements=list(self.selected_element_order)))
-                    if errors:
-                        rows.append(["", "COD", "", "", f"{errors} COD CIF downloads failed", "", "", "", "", ""])
-                except Exception as exc:
-                    rows.append(["", "COD", "", "", f"COD search failed: {exc}", "", "", "", "", ""])
-        if self._materials_project_enabled():
-            mp_key = self._search_cache_key("elements", list(self.selected_element_order))
-            if not self.local_phase_cache.search_is_fresh("MP", mp_key):
-                try:
-                    mp_entries = self.materials_project.search_elements(
-                        list(self.selected_element_order),
-                        limit=80,
-                    )
-                    self._download_mp_entries_to_cache(mp_entries)
-                    self.local_phase_cache.mark_search("MP", mp_key)
-                    rows = self._dedupe_candidate_rows(
-                        rows + self._cache_rows(self._search_local_cache(elements=list(self.selected_element_order)))
-                    )
-                except Exception as exc:
-                    rows.append(["MP", "", "", "Materials Project search failed", "", str(exc)])
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            rows = self.candidate_search_service.search_elements(
+                list(self.selected_element_order),
+                self._candidate_search_options(),
+            )
+        finally:
+            self.unsetCursor()
         if self.search_input is not None and self.formula_sum_input is not None:
             self.search_input.setText(self.formula_sum_input.text().strip())
-        rows = self._filter_candidate_rows_by_excluded_elements(rows)
         if not rows:
             self._set_candidate_rows([["", "", "", "No entries for selected elements", "", ""]])
             return
-        self._set_candidate_rows(self._dedupe_candidate_rows(rows))
+        self._set_candidate_rows(rows)
+
+    def _candidate_search_options(self) -> CandidateSearchOptions:
+        return CandidateSearchOptions(
+            local_sources=self._local_cache_sources(),
+            excluded_elements=self._excluded_elements(),
+            cod_online_enabled=self._cod_online_enabled(),
+            rruff_enabled=self._rruff_enabled(),
+            materials_project_enabled=self._materials_project_enabled(),
+            material_class_allowed=self._material_class_allowed,
+        )
 
     def _materials_project_enabled(self) -> bool:
         return bool(self.settings.value("materials_project/enabled", False, type=bool)) and self.materials_project.status().configured
 
-    def _local_cache_enabled(self) -> bool:
-        return self.local_cache_checkbox is None or self.local_cache_checkbox.isChecked()
+    def _local_cache_sources(self) -> list[str]:
+        sources = []
+        if self._source_enabled("sources/user_library", True):
+            sources.extend(["USER", "CCDC", "COD"])
+        if self._source_enabled("sources/cod_local", True):
+            sources.append("COD")
+        if self._materials_project_enabled():
+            sources.append("MP")
+        return list(dict.fromkeys(sources))
 
     def _cod_online_enabled(self) -> bool:
-        return self.cod_online_checkbox is None or self.cod_online_checkbox.isChecked()
+        return self._source_enabled("sources/cod_online", True)
 
-    def _search_cache_key(self, mode: str, query, excluded: list[str] | None = None) -> str:
-        if isinstance(query, (list, tuple, set)):
-            query_text = " ".join(sorted(str(item).strip() for item in query if str(item).strip()))
-        else:
-            query_text = re.sub(r"\s+", " ", str(query or "").strip().lower())
-        excluded_text = " ".join(sorted(str(item).strip() for item in excluded or [] if str(item).strip()))
-        return f"{mode}|{query_text}|exclude:{excluded_text}"
+    def _rruff_enabled(self) -> bool:
+        return self._source_enabled("sources/rruff", False)
 
-    def _cache_rows(self, entries) -> list[list[str]]:
-        return [
-            [
-                entry.source,
-                entry.entry_id,
-                self._display_formula(entry.formula),
-                entry.name or self._display_formula(entry.formula),
-                "",
-                entry.source_text or entry.spacegroup,
-            ]
-            for entry in entries
-        ]
-
-    def _display_formula(self, formula: str) -> str:
-        parts = re.findall(r"[A-Z][a-z]?[0-9.]*", formula or "")
-        return " ".join(parts) if parts else formula
-
-    def _search_local_cache(
-        self,
-        text: str = "",
-        elements: list[str] | None = None,
-    ):
-        return self.local_phase_cache.search(
-            text=text,
-            elements=elements,
-            excluded_elements=self._excluded_elements(),
-            limit=100,
-        )
-
-    def _download_cod_entries_to_cache(self, entries) -> int:
-        errors = 0
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        try:
-            for entry in entries:
-                try:
-                    self.local_phase_cache.download_cod_entry(entry, self.cod_online)
-                except Exception:
-                    errors += 1
-        finally:
-            self.unsetCursor()
-        return errors
-
-    def _download_mp_entries_to_cache(self, entries) -> int:
-        errors = 0
-        if not entries:
-            return errors
-        target_dir = self.local_phase_cache.root / "materials_project_cif"
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        try:
-            for entry in entries:
-                try:
-                    cif_path = self.materials_project.download_cif(entry.material_id, target_dir)
-                    self.local_phase_cache.index_cif(cif_path, source="MP", entry_id=entry.material_id)
-                except Exception:
-                    errors += 1
-        finally:
-            self.unsetCursor()
-        return errors
-
-    def _download_ccdc_doi_to_cache(self, doi: str):
-        target_dir = self.local_phase_cache.root / "ccdc_cif"
-        cif_path = self.ccdc.download_cif_by_doi(doi, target_dir)
-        entry_id = cif_path.stem
-        self.local_phase_cache.index_cif(cif_path, source="CCDC", entry_id=entry_id)
-        entry = self.local_phase_cache.get("CCDC", entry_id)
-        if entry is None:
-            raise ValueError("CCDC CIF was downloaded but could not be indexed.")
-        return entry
-
-    def _index_ccdc_entries(self, entries) -> None:
-        for entry in entries:
-            cif_path = self.local_phase_cache.root / "ccdc_cif" / f"{self.ccdc._safe_id(entry.identifier)}.cif"
-            if cif_path.exists():
-                self.local_phase_cache.index_cif(cif_path, source="CCDC", entry_id=entry.identifier)
-
-    def _dedupe_candidate_rows(self, rows: list[list[str]]) -> list[list[str]]:
-        unique = []
-        seen = set()
-        for row in rows:
-            normalized = self._normalize_candidate_row(row)
-            key = tuple(value.strip().lower() for value in normalized[:4])
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(normalized)
-        return unique
-
-    def _cod_rows(self, entries) -> list[list[str]]:
-        return [
-            [
-                "COD",
-                entry.cod_id,
-                entry.formula,
-                entry.name or entry.mineral,
-                "",
-                entry.source or entry.spacegroup,
-            ]
-            for entry in entries
-        ]
-
-    def _materials_project_rows(self, entries) -> list[list[str]]:
-        if not self._materials_project_enabled():
-            return []
-        return [
-            [
-                "MP",
-                entry.material_id,
-                entry.formula,
-                entry.name,
-                "",
-                entry.energy_above_hull or entry.spacegroup or "Materials Project",
-            ]
-            for entry in entries
-        ]
-
-    def _filter_candidate_rows_by_excluded_elements(self, rows: list[list[str]]) -> list[list[str]]:
-        excluded = set(self._excluded_elements())
-        filtered = []
-        for row in rows:
-            normalized = self._normalize_candidate_row(row)
-            formula = normalized[2] if len(normalized) > 2 else ""
-            if excluded and formula and formula_elements(formula) & excluded:
-                continue
-            if formula and not self._material_class_allowed(formula):
-                continue
-            filtered.append(row)
-        return filtered
-
-    def _filter_cod_entries(self, entries):
-        return [
-            entry
-            for entry in entries
-            if self._material_class_allowed(entry.formula)
-        ]
+    def _source_enabled(self, setting_key: str, default: bool) -> bool:
+        return bool(self.settings.value(setting_key, default, type=bool))
 
     def _material_class_allowed(self, formula: str) -> bool:
         if self.inorganics_checkbox is None or self.organics_checkbox is None:
@@ -2281,7 +2628,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self.exclude_all_other_elements = True
         self.element_states.clear()
         self.selected_element_order.clear()
-        for element in self._element_buttons:
+        for element in self._element_symbols():
             self._set_element_state(element, "excluded")
         if self.inorganics_checkbox is not None:
             self.inorganics_checkbox.setChecked(True)
@@ -2294,8 +2641,19 @@ class PhaseFinderWindow(AnalysisWindow):
         current = self.element_states.get(element, "excluded")
         self._set_element_state(element, "excluded" if current == "required" else "required")
         if not any(state == "required" for state in self.element_states.values()):
-            for symbol in self._element_buttons:
-                self._set_element_state(symbol, "excluded")
+            for symbol in self._element_symbols():
+                if self.element_states.get(symbol) != "optional":
+                    self._set_element_state(symbol, "excluded")
+        self._update_element_fields()
+
+    def _toggle_optional_element(self, element: str) -> None:
+        self.exclude_all_other_elements = True
+        current = self.element_states.get(element, "excluded")
+        self._set_element_state(element, "excluded" if current == "optional" else "optional")
+        if not any(state == "required" for state in self.element_states.values()):
+            for symbol in self._element_symbols():
+                if symbol != element and self.element_states.get(symbol) != "optional":
+                    self._set_element_state(symbol, "excluded")
         self._update_element_fields()
 
     def _reset_selected_elements(self) -> None:
@@ -2304,7 +2662,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self.element_states.clear()
         self.selected_element_order.clear()
         self.exclude_all_other_elements = True
-        for element in self._element_buttons:
+        for element in self._element_symbols():
             self._set_element_state(element, "excluded")
         if self.ccdc_doi_input is not None:
             self.ccdc_doi_input.clear()
@@ -2317,7 +2675,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self.selected_element_order = [
             element for element in self.selected_element_order if element in self.selected_elements
         ]
-        for element in sorted(self.selected_elements, key=_element_sort_key):
+        for element in sorted(self.selected_elements, key=element_sort_key):
             if element not in self.selected_element_order:
                 self.selected_element_order.append(element)
         formula = " ".join(self.selected_element_order)
@@ -2326,21 +2684,27 @@ class PhaseFinderWindow(AnalysisWindow):
         if self.formula_sum_input is not None:
             self.formula_sum_input.setText(formula)
         if hasattr(self, "element_gate_label") and self.element_gate_label is not None:
-            self.element_gate_label.setText(f"Gate: {formula or 'none'}")
+            optional = [
+                element
+                for element, state in sorted(self.element_states.items(), key=lambda item: element_sort_key(item[0]))
+                if state == "optional"
+            ]
+            optional_text = f"; optional: {' '.join(optional)}" if optional else ""
+            self.element_gate_label.setText(f"Gate: {formula or 'none'}{optional_text}")
         if self.name_input is not None:
             excluded = [
                 element
-                for element, state in sorted(self.element_states.items(), key=lambda item: _element_sort_key(item[0]))
+                for element, state in sorted(self.element_states.items(), key=lambda item: element_sort_key(item[0]))
                 if state == "excluded"
             ]
             optional = [
                 element
-                for element, state in sorted(self.element_states.items(), key=lambda item: _element_sort_key(item[0]))
+                for element, state in sorted(self.element_states.items(), key=lambda item: element_sort_key(item[0]))
                 if state == "optional"
             ]
             any_elements = [
                 element
-                for element, state in sorted(self.element_states.items(), key=lambda item: _element_sort_key(item[0]))
+                for element, state in sorted(self.element_states.items(), key=lambda item: element_sort_key(item[0]))
                 if state == "any"
             ]
             summary = []
@@ -2360,8 +2724,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self._last_formula_text = formula
 
     def _set_element_state(self, element: str, state: str) -> None:
-        button = self._element_buttons.get(element)
-        if button is None:
+        if self.element_table is None:
             return
         if state == "neutral":
             self.element_states.pop(element, None)
@@ -2373,7 +2736,7 @@ class PhaseFinderWindow(AnalysisWindow):
                 self.selected_element_order.append(element)
             elif state != "required" and element in self.selected_element_order:
                 self.selected_element_order.remove(element)
-        button.setStyleSheet(_element_state_style(state))
+        self.element_table.set_element_state(element, state)
 
     def _excluded_elements(self) -> list[str]:
         if not self.selected_elements:
@@ -2381,11 +2744,14 @@ class PhaseFinderWindow(AnalysisWindow):
         if self.exclude_all_other_elements:
             return [
                 element
-                for element in self._element_buttons
+                for element in self._element_symbols()
                 if element not in self.selected_elements
                 and self.element_states.get(element, "neutral") not in {"optional", "any"}
             ]
         return [element for element, state in self.element_states.items() if state == "excluded"]
+
+    def _element_symbols(self) -> list[str]:
+        return self.element_table.element_symbols if self.element_table is not None else []
 
     def _format_entry_first_peak(self, entry) -> str:
         return ""
@@ -2397,29 +2763,9 @@ class PhaseFinderWindow(AnalysisWindow):
             self._search_pdf2_text()
 
     def _set_candidate_rows(self, rows: list[list[str]]) -> None:
-        self.candidate_table.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            normalized_row = self._normalize_candidate_row(row)
-            for col_index, value in enumerate(normalized_row[: self.candidate_table.columnCount()]):
-                self.candidate_table.setItem(row_index, col_index, QTableWidgetItem(value))
-        self.candidate_table.resizeColumnsToContents()
-        self.candidate_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-
-    def _normalize_candidate_row(self, row: list[str]) -> list[str]:
-        if len(row) == 6:
-            return row
-        if len(row) >= 10:
-            return [
-                row[1],
-                row[2],
-                row[3],
-                row[4],
-                row[8],
-                row[9],
-            ]
-        if len(row) >= 5:
-            return ["", "", "", row[4], "", ""]
-        return (row + [""] * 6)[:6]
+        self.candidate_table.set_rows(rows, normalize_candidate_row)
+        if rows:
+            self._update_compound_card(self._candidate_row_values(0))
 
     def _format_first_peak_two_theta(self, candidate) -> str:
         return ""
@@ -2428,17 +2774,6 @@ class PhaseFinderWindow(AnalysisWindow):
         for item in self.plot_layers.get("candidate_markers", []):
             self.match_plot.removeItem(item)
         self.plot_layers["candidate_markers"] = []
-
-    def _set_element_scale(self, value: str) -> None:
-        factor = int(value.removesuffix("%")) / 100
-        width = round(22 * factor)
-        height = round(18 * factor)
-        font_size = max(6, round(7 * factor))
-        for widget in self._element_widgets:
-            widget.setFixedSize(width, height)
-            font = widget.font()
-            font.setPointSize(font_size)
-            widget.setFont(font)
 
     def _simple_tab(self, labels: list[str]) -> QWidget:
         widget = QWidget()

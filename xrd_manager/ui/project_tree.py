@@ -99,6 +99,37 @@ class ProjectTree(QTreeWidget):
     def checked_pattern_ids(self) -> list[str]:
         return [pattern_id for pattern_id in self._pattern_order if pattern_id in self._checked_pattern_ids]
 
+    def current_pattern_id(self) -> str | None:
+        current = self.current_object()
+        if current is None:
+            return None
+        object_type, object_id = current
+        return object_id if object_type == "pattern" else None
+
+    def current_object(self) -> tuple[str, str] | None:
+        item = self.currentItem()
+        if item is None:
+            return None
+        data = item.data(0, 256)
+        if not data:
+            return None
+        object_type, object_id = data
+        if object_type in {"pattern", "phase"}:
+            return object_type, object_id
+        return None
+
+    def select_object(self, object_type: str, object_id: str) -> None:
+        if object_type == "pattern":
+            item = self._pattern_items.get(object_id)
+        elif object_type == "phase":
+            item = self._phase_items.get(object_id)
+        else:
+            item = None
+        if item is None:
+            return
+        self.setCurrentItem(item)
+        self.scrollToItem(item)
+
     def checked_phase_ids(self) -> list[str]:
         return [phase_id for phase_id in self._phase_order if phase_id in self._checked_phase_ids]
 

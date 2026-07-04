@@ -16,4 +16,3 @@ class Pattern(ProjectObject):
     @classmethod
     def create(cls, name: str, source_path: str = "") -> "Pattern":
         return cls(name=name, id=new_id("pattern"), source_path=source_path)
-

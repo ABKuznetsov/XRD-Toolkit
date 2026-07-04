@@ -14,7 +14,10 @@ def _clean_value(value: str | None) -> str:
     text = str(value).strip().strip("'").strip('"')
     if text in {".", "?"}:
         return ""
-    return re.sub(r"\(([^)]*)\)", "", text)
+    # CIF numbers often carry uncertainty as 24.70999(5). Keep chemical
+    # groups such as Ca28 (Al57 Si135 O384), remove only numeric uncertainty.
+    text = re.sub(r"(?<=\d)\([0-9]+\)", "", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _float_or_none(value: str | None) -> float | None:
@@ -122,6 +125,70 @@ def _gemmi_symops(block) -> list[str]:
     return ["x,y,z"]
 
 
+def _gemmi_value(block, *tags: str) -> str:
+    for tag in tags:
+        value = block.find_value(tag)
+        cleaned = _clean_value(str(value)) if value else ""
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _gemmi_loop_clean_values(block, tag: str) -> list[str]:
+    loop = block.find_loop(tag)
+    if loop is None:
+        return []
+    return [value for value in (_clean_value(str(item)) for item in loop) if value]
+
+
+def _publication_details(metadata: dict[str, str]) -> str:
+    lines = []
+    title = metadata.get("publication_title", "")
+    authors = metadata.get("publication_authors", "")
+    journal = metadata.get("journal", "")
+    year = metadata.get("year", "")
+    volume = metadata.get("volume", "")
+    pages = metadata.get("pages", "")
+    doi = metadata.get("doi", "")
+    if title:
+        lines.append(title)
+    if authors:
+        lines.append(authors)
+    journal_parts = [part for part in [journal, year, f"vol. {volume}" if volume else "", f"pp. {pages}" if pages else ""] if part]
+    if journal_parts:
+        lines.append(", ".join(journal_parts))
+    if doi:
+        lines.append(f"DOI {doi}")
+    return "\n".join(lines)
+
+
+def _gemmi_metadata(block) -> dict[str, str]:
+    pages = ""
+    page_first = _gemmi_value(block, "_journal_page_first")
+    page_last = _gemmi_value(block, "_journal_page_last")
+    if page_first and page_last:
+        pages = f"{page_first}-{page_last}"
+    elif page_first:
+        pages = page_first
+    metadata = {
+        "chemical_name_mineral": _gemmi_value(block, "_chemical_name_mineral"),
+        "chemical_name_common": _gemmi_value(block, "_chemical_name_common"),
+        "chemical_name_systematic": _gemmi_value(block, "_chemical_name_systematic"),
+        "formula_structural": _gemmi_value(block, "_chemical_formula_structural"),
+        "formula_sum": _gemmi_value(block, "_chemical_formula_sum"),
+        "formula_calculated": _gemmi_value(block, "_chemical_formula_analytical", "_chemical_formula_iupac"),
+        "publication_title": _gemmi_value(block, "_publ_section_title"),
+        "publication_authors": "; ".join(_gemmi_loop_clean_values(block, "_publ_author_name")),
+        "journal": _gemmi_value(block, "_journal_name_full"),
+        "year": _gemmi_value(block, "_journal_year"),
+        "volume": _gemmi_value(block, "_journal_volume"),
+        "pages": pages,
+        "doi": _gemmi_value(block, "_journal_paper_doi", "_publ_section_references"),
+    }
+    metadata["publication"] = _publication_details(metadata)
+    return {key: value for key, value in metadata.items() if value}
+
+
 def _fallback_loop(text: str, required_tag: str) -> tuple[list[str], list[list[str]]]:
     lines = text.splitlines()
     index = 0
@@ -200,14 +267,65 @@ def _fallback_symops(text: str) -> list[str]:
 
 def _fallback_values(text: str) -> dict[str, str]:
     values = {}
-    for line in text.splitlines():
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            index += 1
             continue
         parts = stripped.split(None, 1)
-        if len(parts) == 2 and parts[0].startswith("_"):
+        if len(parts) == 1 and parts[0].startswith("_") and index + 1 < len(lines) and lines[index + 1].strip() == ";":
+            tag = parts[0]
+            index += 2
+            value_lines = []
+            while index < len(lines) and lines[index].strip() != ";":
+                value_lines.append(lines[index].strip())
+                index += 1
+            values[tag] = " ".join(value_lines).strip()
+        elif len(parts) == 2 and parts[0].startswith("_"):
             values[parts[0]] = parts[1].strip()
+        index += 1
     return values
+
+
+def _fallback_metadata(text: str, values: dict[str, str]) -> dict[str, str]:
+    def value(*keys: str) -> str:
+        for key in keys:
+            if key in values:
+                return _clean_value(values[key])
+        return ""
+
+    author_tags, author_rows = _fallback_loop(text, "_publ_author_name")
+    authors = []
+    if author_tags:
+        author_index = author_tags.index("_publ_author_name")
+        authors = [_clean_value(row[author_index]) for row in author_rows if len(row) > author_index]
+        authors = [author for author in authors if author]
+    pages = ""
+    page_first = value("_journal_page_first")
+    page_last = value("_journal_page_last")
+    if page_first and page_last:
+        pages = f"{page_first}-{page_last}"
+    elif page_first:
+        pages = page_first
+    metadata = {
+        "chemical_name_mineral": value("_chemical_name_mineral"),
+        "chemical_name_common": value("_chemical_name_common"),
+        "chemical_name_systematic": value("_chemical_name_systematic"),
+        "formula_structural": value("_chemical_formula_structural"),
+        "formula_sum": value("_chemical_formula_sum"),
+        "publication_title": value("_publ_section_title"),
+        "publication_authors": "; ".join(authors),
+        "journal": value("_journal_name_full"),
+        "year": value("_journal_year"),
+        "volume": value("_journal_volume"),
+        "pages": pages,
+        "doi": value("_journal_paper_doi"),
+    }
+    metadata["publication"] = _publication_details(metadata)
+    return {key: val for key, val in metadata.items() if val}
 
 
 def _read_structure_from_cif(path: Path) -> Structure:
@@ -216,17 +334,20 @@ def _read_structure_from_cif(path: Path) -> Structure:
 
         doc = gemmi.cif.read_file(str(path))
         block = doc.sole_block()
-        a = float(block.find_value("_cell_length_a"))
-        b = float(block.find_value("_cell_length_b"))
-        c = float(block.find_value("_cell_length_c"))
-        alpha = float(block.find_value("_cell_angle_alpha"))
-        beta = float(block.find_value("_cell_angle_beta"))
-        gamma = float(block.find_value("_cell_angle_gamma"))
-        formula = block.find_value("_chemical_formula_sum") or block.find_value("_chemical_formula_structural") or ""
+        a = _float_or_none(str(block.find_value("_cell_length_a") or ""))
+        b = _float_or_none(str(block.find_value("_cell_length_b") or ""))
+        c = _float_or_none(str(block.find_value("_cell_length_c") or ""))
+        alpha = _float_or_none(str(block.find_value("_cell_angle_alpha") or ""))
+        beta = _float_or_none(str(block.find_value("_cell_angle_beta") or ""))
+        gamma = _float_or_none(str(block.find_value("_cell_angle_gamma") or ""))
+        if None in (a, b, c, alpha, beta, gamma):
+            raise ValueError("CIF cell parameters are incomplete")
+        metadata = _gemmi_metadata(block)
+        formula = metadata.get("formula_sum") or metadata.get("formula_structural") or ""
         name = _best_structure_name(
-            str(block.find_value("_chemical_name_mineral") or ""),
-            str(block.find_value("_chemical_name_common") or ""),
-            str(block.find_value("_chemical_name_systematic") or ""),
+            metadata.get("chemical_name_mineral", ""),
+            metadata.get("chemical_name_common", ""),
+            metadata.get("chemical_name_systematic", ""),
             str(block.name or ""),
             path.stem,
         )
@@ -234,6 +355,7 @@ def _read_structure_from_cif(path: Path) -> Structure:
             name = _normalize_formula(str(formula))
         structure = Structure.create(name=str(name), source_path=str(path), origin="original")
         structure.formula = _normalize_formula(str(formula))
+        structure.metadata.update(metadata)
         structure.space_group = str(
             block.find_value("_symmetry_space_group_name_H-M")
             or block.find_value("_space_group_name_H-M_alt")
@@ -270,6 +392,7 @@ def _read_structure_from_cif(path: Path) -> Structure:
     beta = _float_or_none(value("_cell_angle_beta"))
     gamma = _float_or_none(value("_cell_angle_gamma"))
     formula = _normalize_formula(value("_chemical_formula_sum", "_chemical_formula_structural"))
+    metadata = _fallback_metadata(text, values)
     name = _best_structure_name(
         value("_chemical_name_mineral"),
         value("_chemical_name_common"),
@@ -279,6 +402,7 @@ def _read_structure_from_cif(path: Path) -> Structure:
     )
     structure = Structure.create(name=name, source_path=str(path), origin="original")
     structure.formula = formula
+    structure.metadata.update(metadata)
     structure.space_group = _clean_value(value("_symmetry_space_group_name_H-M", "_space_group_name_H-M_alt"))
     structure.space_group_number = _clean_value(value("_symmetry_Int_Tables_number", "_space_group_IT_number"))
     structure.wavelength = _float_or_none(value("_cell_measurement_wavelength"))

@@ -15,4 +15,3 @@ class Phase(ProjectObject):
     @classmethod
     def create(cls, name: str, source_path: str = "") -> "Phase":
         return cls(name=name, id=new_id("phase"), source_path=source_path)
-

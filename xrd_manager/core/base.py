@@ -24,4 +24,3 @@ class ProjectObject:
 
     def touch(self) -> None:
         self.updated_at = utc_now()
-

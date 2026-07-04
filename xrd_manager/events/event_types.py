@@ -7,4 +7,3 @@ STRUCTURE_SELECTED = "structure.selected"
 REFINEMENT_SELECTED = "refinement.selected"
 RESULT_UPDATED = "result.updated"
 VIEW_CONTEXT_CHANGED = "view.context_changed"
-

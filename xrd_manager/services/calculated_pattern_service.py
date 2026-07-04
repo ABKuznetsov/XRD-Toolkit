@@ -11,6 +11,48 @@ CU_KA1_WAVELENGTH = 1.54051
 CU_KA2_WAVELENGTH = 1.54433
 CU_KA2_INTENSITY_RATIO = 0.5
 
+CORUNDUM_CIF = """
+data_corundum_reference
+_chemical_name_mineral 'Corundum'
+_chemical_formula_sum 'Al2 O3'
+_symmetry_space_group_name_H-M 'R -3 c'
+_cell_length_a 4.759
+_cell_length_b 4.759
+_cell_length_c 12.991
+_cell_angle_alpha 90
+_cell_angle_beta 90
+_cell_angle_gamma 120
+loop_
+_symmetry_equiv_pos_as_xyz
+'x,y,z'
+'-y,x-y,z'
+'-x+y,-x,z'
+'y,x,-z+1/2'
+'x-y,-y,-z+1/2'
+'-x,-x+y,-z+1/2'
+'x+2/3,y+1/3,z+1/3'
+'-y+2/3,x-y+1/3,z+1/3'
+'-x+y+2/3,-x+1/3,z+1/3'
+'y+2/3,x+1/3,-z+5/6'
+'x-y+2/3,-y+1/3,-z+5/6'
+'-x+2/3,-x+y+1/3,-z+5/6'
+'x+1/3,y+2/3,z+2/3'
+'-y+1/3,x-y+2/3,z+2/3'
+'-x+y+1/3,-x+2/3,z+2/3'
+'y+1/3,x+2/3,-z+7/6'
+'x-y+1/3,-y+2/3,-z+7/6'
+'-x+1/3,-x+y+2/3,-z+7/6'
+loop_
+_atom_site_label
+_atom_site_type_symbol
+_atom_site_fract_x
+_atom_site_fract_y
+_atom_site_fract_z
+_atom_site_occupancy
+Al Al 0 0 0.3522 1
+O O 0.306 0 0.25 1
+"""
+
 KALPHA_DOUBLET_LINES = {
     "CuKa": (1.54051, 1.54433),
     "TiKa": (2.74841, 2.75207),

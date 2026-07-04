@@ -9,4 +9,3 @@ class Layer:
     visible: bool = True
     color: str = "#2f6fed"
     opacity: float = 1.0
-

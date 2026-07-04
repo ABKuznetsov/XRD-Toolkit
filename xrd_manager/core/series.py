@@ -22,4 +22,3 @@ class SeriesAnalysis(ProjectObject):
     @classmethod
     def create(cls, name: str, kind: str = "temperature") -> "SeriesAnalysis":
         return cls(name=name, id=new_id("series"), kind=kind)
-

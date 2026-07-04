@@ -31,4 +31,3 @@ class RefinementResult(ProjectObject):
             phase_ids=list(phase_ids),
             method=method,
         )
-

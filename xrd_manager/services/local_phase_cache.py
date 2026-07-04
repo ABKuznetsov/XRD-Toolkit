@@ -105,10 +105,12 @@ class LocalPhaseCache:
         text: str = "",
         elements: list[str] | None = None,
         excluded_elements: list[str] | None = None,
+        sources: list[str] | None = None,
         limit: int = 100,
     ) -> list[CachedPhaseEntry]:
         required = {element.strip() for element in elements or [] if element.strip()}
         excluded = {element.strip() for element in excluded_elements or [] if element.strip()}
+        allowed_sources = {source.strip() for source in sources or [] if source.strip()}
         text = text.strip().lower()
         with self._connect() as connection:
             rows = connection.execute(
@@ -123,6 +125,8 @@ class LocalPhaseCache:
         results = []
         seen = set()
         for row in rows:
+            if allowed_sources and row["source"] not in allowed_sources:
+                continue
             row_elements = set((row["elements"] or "").split())
             if required and not required.issubset(row_elements):
                 continue
@@ -205,6 +209,16 @@ class LocalPhaseCache:
             count += 1
         return count
 
+    def index_cif_folder(self, folder: str | Path, source: str = "COD") -> int:
+        root = Path(folder)
+        if not root.exists():
+            raise FileNotFoundError(f"Folder does not exist: {root}")
+        count = 0
+        for cif_path in root.rglob("*.cif"):
+            self.index_cif(cif_path, source=source, entry_id=cif_path.stem)
+            count += 1
+        return count
+
     def index_cif(
         self,
         cif_path: str | Path,
@@ -218,12 +232,14 @@ class LocalPhaseCache:
             formula = self._best_formula(structure.formula, fallback.formula if fallback else "")
             name = self._best_name(structure.name, fallback.name if fallback else "", formula, entry_id)
             spacegroup = structure.space_group or (fallback.spacegroup if fallback else "")
+            source_text = (fallback.source if fallback else "") or str(structure.metadata.get("publication", "") or "")
             cell = structure.cell
             atoms_json = self._atoms_to_json(structure)
         except Exception:
             formula = fallback.formula if fallback else ""
             name = fallback.name if fallback else cif_path.stem
             spacegroup = fallback.spacegroup if fallback else ""
+            source_text = fallback.source if fallback else ""
             cell = None
             atoms_json = ""
         entry = CachedPhaseEntry(
@@ -232,7 +248,7 @@ class LocalPhaseCache:
             formula=formula,
             name=name,
             spacegroup=spacegroup,
-            source_text=fallback.source if fallback else "",
+            source_text=source_text,
             cif_path=str(cif_path),
             a=getattr(cell, "a", None),
             b=getattr(cell, "b", None),

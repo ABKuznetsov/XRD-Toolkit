@@ -16,7 +16,7 @@ The project is designed as a lightweight alternative to commercial search-match 
 <img width="2048" height="1113" alt="image" src="https://github.com/user-attachments/assets/dc644ac3-2613-4110-9e08-4c8cf70d8dd4" />
 
 
-**Main window of the XRD Phase Finder.**  
+**Main window of the XRD Phase Finder.**
 The application displays the experimental diffraction pattern, calculated profile, theoretical peak positions of selected phases, and highlights diffraction peaks that remain unexplained by the current phase set.
 
 ---
@@ -24,6 +24,8 @@ The application displays the experimental diffraction pattern, calculated profil
 # Features
 
 - Powder XRD pattern viewer
+- Multi-pattern XRD series display with vertical offsets
+- Drag-and-drop import for XRD and CIF files
 - Automatic peak detection
 - Search using the Crystallography Open Database (COD)
 - Local CIF database support
@@ -32,6 +34,8 @@ The application displays the experimental diffraction pattern, calculated profil
 - Automatic profile scaling
 - Peak assignment framework
 - Identification of unexplained diffraction peaks
+- Compound cards with cell parameters, atom positions and publication links
+- High-resolution plot export
 - Cross-platform support (Windows and macOS)
 
 ---
@@ -97,12 +101,6 @@ Launch the graphical interface
 run_finder.bat
 ```
 
-Scientific interface
-
-```text
-run_finder_sci.bat
-```
-
 Command line interface
 
 ```text
@@ -131,6 +129,14 @@ Command line interface
 run_finder_cli.command
 ```
 
+If macOS blocks the scripts after copying or syncing the folder, run this once
+from Terminal inside the project directory:
+
+```bash
+chmod +x *.command
+xattr -dr com.apple.quarantine .
+```
+
 ---
 
 # Opening Files from the Command Line
@@ -139,12 +145,14 @@ GUI
 
 ```text
 run_finder.bat --pattern "path\to\pattern.xy" --cif "path\to\phase.cif"
+./run_finder.command --pattern "path/to/pattern.xy" --cif "path/to/phase.cif"
 ```
 
 CLI
 
 ```text
-run_finder_cli.bat "path\to\pattern.xy" "path\to\phase.cif"
+run_finder_cli.bat "path\to\pattern.xy" --cif "path\to\phase.cif"
+./run_finder_cli.command "path/to/pattern.xy" --cif "path/to/phase.cif"
 ```
 
 ---
@@ -169,6 +177,47 @@ Then enter your Materials Project API key in the application settings.
 
 ---
 
+# Optional Reference Databases
+
+The **Databases** tab controls which sources participate in phase search.
+Use the checkboxes to enable only the databases you want:
+
+- User library
+- COD local
+- COD online
+- RRUFF
+- Materials Project
+
+Large databases are never downloaded automatically. Use the buttons in
+**Databases** to download or index them explicitly:
+
+- `Index COD CIF folder` for an unpacked local COD CIF collection
+- `Index COD ZIP archive` for a downloaded COD archive
+- `Download COD archive URL` when you have a direct COD ZIP URL
+- `Download RRUFF` and `Index RRUFF` for RRUFF measured powder patterns
+
+RRUFF entries are measured reference patterns. They can be overlaid on the
+experimental pattern, but they are not calculated CIF phase profiles.
+
+---
+
+# Multi-pattern Figures
+
+Use `Show -> All selected` to display all checked XRD patterns from the project
+tree. The `Offset` slider controls vertical separation between patterns as a
+percentage of the previous pattern height.
+
+The active XRD pattern is the row highlighted in the project tree. Search,
+candidate preview and phase calculations always use the active pattern only.
+Use the `Order` arrow buttons above the project tree to change the display order
+of XRD patterns and CIF phases.
+
+Zoom is intentionally stable while browsing candidates or changing the active
+pattern. Use `Reset view` or right-click the plot and choose `Show full pattern`
+to return to the full view.
+
+---
+
 # Repository Structure
 
 ```text
@@ -181,6 +230,9 @@ requirements.txt
 requirements-optional.txt
     Optional online database support
 
+CHANGELOG.md
+    Release notes
+
 setup_env.bat
 setup_env.command
     Create Python virtual environment
@@ -188,9 +240,6 @@ setup_env.command
 run_finder.bat
 run_finder.command
     Launch graphical interface
-
-run_finder_sci.bat
-    Scientific interface
 
 run_finder_cli.bat
 run_finder_cli.command

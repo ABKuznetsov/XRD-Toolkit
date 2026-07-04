@@ -19,4 +19,3 @@ class AnalysisResult(ProjectObject):
             result_type=result_type,
             source_ids=list(source_ids or []),
         )
-

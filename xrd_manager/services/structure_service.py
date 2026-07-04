@@ -10,4 +10,3 @@ class StructureService:
             result_type="structure_analysis",
             source_ids=[structure_id],
         )
-

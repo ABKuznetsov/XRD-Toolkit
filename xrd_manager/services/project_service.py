@@ -42,4 +42,3 @@ class ProjectService:
     def _changed(self, project: Project) -> None:
         project.touch()
         self.event_bus.publish(PROJECT_CHANGED, project=project)
-

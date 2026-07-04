@@ -23,4 +23,3 @@ class EventBus:
         event = Event(name=event_name, payload=payload)
         for callback in list(self._subscribers.get(event_name, [])):
             callback(event)
-

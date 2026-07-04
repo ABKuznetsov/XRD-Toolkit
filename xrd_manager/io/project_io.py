@@ -21,4 +21,3 @@ def _to_plain(value: Any) -> Any:
 def save_project_manifest(project: Project, path: str | Path) -> None:
     target = Path(path)
     target.write_text(json.dumps(_to_plain(project), indent=2), encoding="utf-8")
-

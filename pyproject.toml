@@ -1,6 +1,6 @@
 [project]
 name = "xrd-finder-standalone"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone XRD phase finder extracted from XRD Manager."
 requires-python = ">=3.11"
 dependencies = [
