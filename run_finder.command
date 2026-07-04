@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -e
 
-cd "$(dirname "$0")"
+TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$TOOLKIT_ROOT"
 
 find_python() {
     for candidate in \
@@ -24,7 +25,7 @@ find_python() {
 PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
     echo "Could not find a Python with required packages: PySide6, numpy, scipy, pyqtgraph."
-    echo "Run setup_env.command first, or install requirements.txt into Python 3.11+."
+    echo "Run setup_env.command first to create the shared Toolkit .venv, or install requirements.txt into Python 3.11+."
     read "?Press Enter to close..."
     exit 1
 fi

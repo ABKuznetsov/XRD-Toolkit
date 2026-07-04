@@ -1,12 +1,23 @@
 # Changelog
 
+## 1.0.1 - 2026-07-04
+
+### Fixed
+
+- Restored automatic plot fitting after adding phases to the working set when a single XRD pattern is displayed.
+- Kept candidate preview zoom preservation unchanged, so browsing candidate rows does not reset the user's zoom.
+- Removed the old `Standalone Finder Project` default name from the standalone Finder GUI.
+- Replaced remaining public `XRD Manager` window labels with `XRD Analysis Toolkit` / `XRD Finder` names.
+- Clarified that setup scripts create a shared Toolkit `.venv` in the repository root.
+- Updated package metadata version to `1.0.1`.
+
 ## 1.0.0 - 2026-07-04
 
 ### Added
 
 - Linux launch scripts: `setup_env.sh`, `run_finder.sh`, and `run_finder_cli.sh`.
 - Linux installation notes for Python venv/pip and Qt desktop packages.
-- PDF-2 reference-card support from a local Match `PDF2-2004` folder.
+- PDF-2 reference-card support from a local PDF-2 folder.
 - Structural/reference data switches for separating CIF-calculated phases from measured/reference cards.
 - Peak-match probability column and optional candidate ranking by active XRD pattern.
 - Application data/cache paths outside the repository using OS-native locations.

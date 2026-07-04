@@ -6,7 +6,7 @@ if "%~1"=="" goto usage
 if "%~2"=="" goto usage
 
 if not exist ".venv\Scripts\python.exe" (
-    echo Local environment was not found.
+    echo Shared Toolkit environment was not found.
     echo Run setup_env.bat first.
     pause
     exit /b 1

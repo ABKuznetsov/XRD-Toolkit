@@ -145,6 +145,9 @@ The `?` button in the application opens a compact in-app helper with the same co
 
 Python **3.11** or newer.
 
+The setup scripts create one shared virtual environment named `.venv` in the
+repository root. XRD Finder launch scripts use this shared Toolkit environment.
+
 Download Python from the official website:
 
 https://www.python.org/downloads/
@@ -167,7 +170,7 @@ setup_env.bat
 
 The script automatically
 
-- creates a virtual environment (`.venv`)
+- creates the shared Toolkit virtual environment (`.venv`)
 - installs all required Python packages
 
 Launch the graphical interface
@@ -313,8 +316,8 @@ Large databases are never downloaded automatically. Use the buttons in
 RRUFF entries are measured reference patterns. They can be overlaid on the
 experimental pattern, but they are not calculated CIF phase profiles.
 
-PDF-2 entries are local reference cards. The software can read a local Match
-`PDF2-2004` folder when available, but the PDF-2 database itself is not bundled
+PDF-2 entries are local reference cards. The software can read a local
+PDF-2 folder when available, but the PDF-2 database itself is not bundled
 or redistributed.
 
 ---

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$TOOLKIT_ROOT"
 
 if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 was not found."
@@ -23,7 +24,7 @@ if ! python3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) e
 fi
 
 if [ ! -x ".venv/bin/python" ]; then
-    echo "Creating local virtual environment..."
+    echo "Creating shared Toolkit virtual environment at $TOOLKIT_ROOT/.venv..."
     python3 -m venv .venv
 fi
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$TOOLKIT_ROOT"
 
 find_python() {
     local candidates=(
@@ -24,7 +25,7 @@ find_python() {
 PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
     echo "Could not find a Python with required packages: PySide6, numpy, scipy, pyqtgraph."
-    echo "Run ./setup_env.sh first, or install requirements.txt into Python 3.11+."
+    echo "Run ./setup_env.sh first to create the shared Toolkit .venv, or install requirements.txt into Python 3.11+."
     echo
     echo "If Qt fails to start on Linux, install the platform packages for your desktop:"
     echo "  Ubuntu/Debian: sudo apt install libxcb-cursor0 libegl1"

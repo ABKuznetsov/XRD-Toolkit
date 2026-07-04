@@ -1630,7 +1630,7 @@ class PhaseFinderWindow(AnalysisWindow):
         key = self._candidate_key(candidate)
         if any(self._candidate_key(item) == key for item in self.match_candidates):
             if recalculate:
-                self._recalculate_match_profile()
+                self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
             return True
         try:
             cif_path = self._candidate_cif_path(candidate)
@@ -1643,7 +1643,7 @@ class PhaseFinderWindow(AnalysisWindow):
             self.match_candidates.append(candidate.copy())
             self.match_structures[key] = structure
             if recalculate:
-                self._recalculate_match_profile()
+                self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
             return True
         except Exception as exc:
             if show_errors:
@@ -1665,7 +1665,7 @@ class PhaseFinderWindow(AnalysisWindow):
                     self._add_candidate_to_match_list(candidate, show_errors=False, recalculate=False)
                 except Exception as exc:
                     errors.append(str(exc))
-            self._recalculate_match_profile()
+            self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
         finally:
             self.unsetCursor()
         if errors:
@@ -1730,7 +1730,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self._clear_calculated_overlay()
         self._update_match_table()
 
-    def _recalculate_match_profile(self) -> None:
+    def _recalculate_match_profile(self, auto_zoom: bool = False) -> None:
         if not self.match_candidates:
             self._clear_calculated_overlay()
             self._update_match_table()
@@ -1895,6 +1895,11 @@ class PhaseFinderWindow(AnalysisWindow):
         self.plot_layers["total_profile"].append(sum_item)
         self.match_plot.setTitle("")
         self._update_match_table()
+        if auto_zoom:
+            self._reset_match_plot_view()
+
+    def _should_autozoom_match_profile(self) -> bool:
+        return not self.show_all_selected_patterns and len(self._patterns_to_display()) == 1
 
     def _estimate_profile_fwhm(self, x, corrected_y) -> float:
         return estimate_profile_fwhm(x, corrected_y)
@@ -3175,7 +3180,7 @@ class PhaseFinderWindow(AnalysisWindow):
             QMessageBox.warning(
                 self,
                 "Select PDF-2 folder",
-                "The selected folder does not contain summary.dat.\n\nSelect the PDF2-2004 folder from Match.",
+                "The selected folder does not contain summary.dat.\n\nSelect a PDF-2 folder that contains summary.dat.",
             )
             return
         self.match_pdf2.set_root(selected_root)

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+TOOLKIT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$TOOLKIT_ROOT"
 
 find_python() {
     local candidates=(
@@ -24,7 +25,7 @@ find_python() {
 PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
     echo "Could not find a Python with required packages: numpy and scipy."
-    echo "Run ./setup_env.sh first, or install requirements.txt into Python 3.11+."
+    echo "Run ./setup_env.sh first to create the shared Toolkit .venv, or install requirements.txt into Python 3.11+."
     exit 1
 fi
 

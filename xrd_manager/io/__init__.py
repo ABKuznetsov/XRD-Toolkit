@@ -1,1 +1,1 @@
-"""Input/output adapters for XRD Manager."""
+"""Input/output adapters for XRD Finder."""

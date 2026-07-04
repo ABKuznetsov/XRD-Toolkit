@@ -1,1 +1,1 @@
-"""Core domain entities for XRD Manager."""
+"""Core domain entities for XRD Finder."""

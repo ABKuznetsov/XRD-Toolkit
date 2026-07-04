@@ -14,7 +14,7 @@ from xrd_manager.ui.analysis_windows import PhaseFinderWindow
 
 
 def build_local_project(pattern_paths: list[str], cif_paths: list[str]) -> Project:
-    project = Project(name="Standalone Finder Project")
+    project = Project(name="XRD Finder Project")
     for path in pattern_paths:
         source = Path(path)
         project.patterns.append(Pattern.create(name=source.stem, source_path=str(source)))
@@ -29,7 +29,7 @@ def build_local_project(pattern_paths: list[str], cif_paths: list[str]) -> Proje
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Standalone Finder GUI")
+    parser = argparse.ArgumentParser(description="XRD Finder GUI")
     parser.add_argument("--pattern", action="append", default=[], help="Observed XRD pattern file")
     parser.add_argument("--cif", action="append", default=[], help="Candidate CIF file")
     args = parser.parse_args()
@@ -42,7 +42,7 @@ def main() -> int:
     window = PhaseFinderWindow(project)
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
-    window.setWindowTitle(f"XRD Finder - {project.name}")
+    window.setWindowTitle("XRD Finder")
     window.show()
     return int(app.exec())
 
