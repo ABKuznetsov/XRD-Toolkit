@@ -4,3 +4,5 @@ pyqtgraph
 PySide6
 scipy
 certifi
+mp-api
+pymatgen
