@@ -5,14 +5,31 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Status](https://img.shields.io/badge/Status-Stable-green.svg)
 
-**XRD Analysis Toolkit** is an open-source, cross-platform application for **phase identification from powder X-ray diffraction (XRD) patterns** using open crystallographic databases, local reference libraries and CIF-based diffraction simulation.
+# Introduction
 
-The project is designed as a lightweight research tool for search-match work: import one or many experimental diffraction patterns, select elemental constraints, search candidate phases, preview reference peaks, calculate CIF-based profiles and build an interpretable set of selected phases.
+Welcome to the **XRD Analysis Toolkit** project. Its first application, **XRD Phase Finder**, is an open-source Python tool for phase identification from powder X-ray diffraction (XRD) data. It combines experimental pattern handling, element-constrained database search, reference-pattern preview, CIF-based diffraction simulation and practical candidate ranking in one desktop workflow.
 
-It is especially focused on practical laboratory workflows where the user needs to compare experimental XRD data with COD/CIF structures, local phase libraries, RRUFF measured patterns, Materials Project structures, CCDC/CSD entries and optional PDF-2 cards.
+XRD Phase Finder is designed for everyday search-match work: import one or many experimental XRD patterns, restrict the chemistry with required or optional elements, search local and online phase sources, compare candidates against the observed pattern, inspect compound cards and build an interpretable set of selected phases.
+
+The project is possible because of the open scientific software and database ecosystem around crystallography and diffraction. In particular, XRD Phase Finder can work with or build on:
+
+- COD (Crystallography Open Database)
+- Materials Project (MP)
+- AFLOW Database
+- OQMD (Open Quantum Materials Database)
+- RRUFF Project measured powder patterns
+- PDF-2 reference-card data provided by the user
+- CCDC/CSD access when the user has the appropriate CCDC Python API/license
+- pymatgen
+- NumPy, SciPy and pandas
+- matplotlib
+- PySide6 / Qt
+
+Large third-party databases are **not bundled** with this repository or installer. XRD Phase Finder uses official online access, user-provided local folders, user API keys or optional local imports where available. Users remain responsible for following the license terms and citation requirements of each external data source.
+
+The main mechanism behind XRD Phase Finder is intentionally pragmatic: it first helps the user find chemically plausible candidates, then compares each candidate's own strongest calculated or measured peaks against the active experimental pattern. This is meant for phase identification and pre-refinement screening, not as a replacement for full Rietveld refinement.
 
 ---
-
 # Screenshots
 
 ## Phase Search Overview
@@ -88,27 +105,27 @@ The Databases tab controls which sources participate in search and provides expl
 
 ```text
 Load experimental XRD
-        ???
-        ???
+        |
+        |
 Peak detection
-        ???
-        ???
+        |
+        |
 Search candidate phases
 (COD / local CIF / RRUFF / PDF-2 / CCDC / Materials Project)
-        ???
-        ???
+        |
+        |
 Load crystal structures (CIF)
-        ???
-        ???
+        |
+        |
 Calculate theoretical diffraction patterns
-        ???
-        ???
+        |
+        |
 Compare experimental and calculated profiles
-        ???
-        ???
+        |
+        |
 Assign diffraction peaks
-        ???
-        ???
+        |
+        |
 Identify unexplained peaks
 ```
 
@@ -141,52 +158,68 @@ The `?` button in the application opens a compact in-app helper with the same co
 
 # Installation
 
-## Requirements
+## Minimum Requirements
 
-Python **3.11** or newer.
+### Windows installer
 
-The setup scripts create one shared virtual environment named `.venv` in the
-repository root. XRD Phase Finder launch scripts use this shared Toolkit environment.
+- Windows 10 or Windows 11, 64-bit recommended.
+- Internet access for first-time setup, because the installer may need to download Python and Python packages.
+- Permission to install the application. The installer requests administrator rights for installation into `Program Files`.
+- Approximately 1 GB of free disk space is recommended for the shared Python environment and scientific packages.
 
-Download Python from the official website:
+### Manual setup from source
 
-https://www.python.org/downloads/
+- Python **3.11** or newer.
+- `pip` and Python virtual environment support.
+- Internet access for installing Python packages.
+- macOS or Linux users should install from source using the setup scripts in the repository root.
 
-Direct Python 3.11.9 installers:
+XRD Phase Finder creates a shared per-user environment named `XRD_Toolkit` under the user's application-data folder on Windows. Future XRD applications from the same toolkit can reuse this environment.
 
-- Windows 64-bit: https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe
-- Windows 32-bit: https://www.python.org/ftp/python/3.11.9/python-3.11.9.exe
-- macOS: https://www.python.org/ftp/python/3.11.9/python-3.11.9-macos11.pkg
+Large external crystallographic databases are optional and user-managed. COD, RRUFF, PDF-2, Materials Project and CCDC/CSD data are not redistributed with the installer.
 
 ---
 
 ## Windows
 
-Run
+The recommended Windows installation method is the release installer:
+
+```text
+XRD_Phase_Finder_Setup_1.0.2.exe
+```
+
+Download it from the GitHub Releases page and run it. The installer:
+
+- installs XRD Phase Finder into the selected application folder
+- creates Start Menu and optional Desktop shortcuts
+- creates or reuses the shared `XRD_Toolkit` Python environment in user AppData
+- installs the required Python packages
+- adds an uninstall entry to Windows
+- checks for updates when XRD Phase Finder starts
+
+If Python 3.11 is not already available, the setup script first tries `winget` and then falls back to the official Python 3.11.9 installer from python.org.
+
+### Windows manual setup
+
+Developers or users running directly from a source checkout can still use:
 
 ```text
 setup_env.bat
 ```
 
-The script automatically
-
-- creates the shared Toolkit virtual environment (`.venv`)
-- installs all required Python packages
-
-Launch the graphical interface
+Launch the graphical interface:
 
 ```text
 XRD_Finder\run_finder.bat
 ```
 
-Command line interface
+Command line interface:
 
 ```text
 XRD_Finder\run_finder_cli.bat
 ```
 
 ---
-
 ## macOS
 
 Run
