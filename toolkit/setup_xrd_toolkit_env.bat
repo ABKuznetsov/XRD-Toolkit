@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 set "APP_ROOT=%~dp0.."
 for %%I in ("%APP_ROOT%") do set "APP_ROOT=%%~fI"
 set "XRD_TOOLKIT_ROOT=%LocalAppData%\XRD_Toolkit"
@@ -51,21 +51,60 @@ if not exist "%XRD_TOOLKIT_ENV%\Scripts\python.exe" (
     exit /b 1
 )
 
-echo Upgrading pip...
-call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --upgrade pip >> "%LOG_FILE%" 2>&1
+echo Upgrading pip and build tools...
+echo Upgrading pip and build tools...>> "%LOG_FILE%"
+call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1
 if errorlevel 1 goto failed
 
 echo Installing XRD Phase Finder requirements...
-call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install -r "%APP_ROOT%\XRD_Finder\requirements.txt" >> "%LOG_FILE%" 2>&1
+echo Installing XRD Phase Finder requirements...>> "%LOG_FILE%"
+call :install_requirements "%APP_ROOT%\XRD_Finder\requirements.txt"
 if errorlevel 1 goto failed
 
+echo Writing launchers...>> "%LOG_FILE%"
 call :write_launchers
+echo Updating user PATH...>> "%LOG_FILE%"
 call :ensure_user_path "%XRD_TOOLKIT_BIN%"
 
 echo [%date% %time%] XRD_Toolkit setup complete.>> "%LOG_FILE%"
 echo XRD_Toolkit environment is ready.
 exit /b 0
 
+:install_requirements
+set "REQ_FILE=%~1"
+if not exist "%REQ_FILE%" (
+    echo Requirements file was not found: %REQ_FILE%
+    echo Requirements file was not found: %REQ_FILE%>> "%LOG_FILE%"
+    exit /b 1
+)
+for /f "usebackq tokens=* delims=" %%P in ("%REQ_FILE%") do (
+    set "REQ=%%P"
+    if not "!REQ!"=="" if not "!REQ:~0,1!"=="#" (
+        call :install_one_requirement "!REQ!"
+        if errorlevel 1 exit /b 1
+    )
+)
+exit /b 0
+
+:install_one_requirement
+set "REQ=%~1"
+echo Installing package: %REQ%
+echo Installing package: %REQ%>> "%LOG_FILE%"
+if /I "%REQ%"=="PySide6" (
+    echo PySide6 is a large package. Downloading can take several minutes on a slow connection.
+    echo PySide6 is a large package. Downloading can take several minutes on a slow connection.>> "%LOG_FILE%"
+)
+if /I "%REQ%"=="pymatgen" (
+    echo pymatgen and its scientific dependencies can take several minutes.
+    echo pymatgen and its scientific dependencies can take several minutes.>> "%LOG_FILE%"
+)
+call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary "%REQ%" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo Failed to install package: %REQ%
+    echo Failed to install package: %REQ%>> "%LOG_FILE%"
+    exit /b 1
+)
+exit /b 0
 :write_launchers
 > "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo @echo off
 >> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "APP_ROOT=%APP_ROOT%"
@@ -110,6 +149,7 @@ exit /b 1
 where winget >nul 2>nul
 if errorlevel 1 goto install_python_direct
 echo Python 3.11+ was not found. Installing with winget...
+echo Installing Python 3.11 with winget...>> "%LOG_FILE%"
 winget install --id Python.Python.3.11 -e --source winget --accept-package-agreements --accept-source-agreements >> "%LOG_FILE%" 2>&1
 if not errorlevel 1 exit /b 0
 
@@ -137,6 +177,11 @@ exit /b 0
 echo XRD_Toolkit setup failed. See log: %LOG_FILE%
 echo [%date% %time%] setup failed.>> "%LOG_FILE%"
 exit /b 1
+
+
+
+
+
 
 
 

@@ -10,9 +10,9 @@
     "assets":  [
                    {
                        "name":  "XRD_Phase_Finder_Setup_1.0.2.exe",
-                       "sha256":  "92596b1c56e9b18e79104dbe3ad9f2d0d5d536fe227c4e8644005ea3ab502a53",
+                       "sha256":  "94064094a3dc21f1d41783d42a5805f51516147cf9256f3766908b66e58e095b",
                        "type":  "installer",
-                       "size_bytes":  5827173,
+                       "size_bytes":  5829983,
                        "platform":  "windows-x64",
                        "url":  "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.0.2/XRD_Phase_Finder_Setup_1.0.2.exe"
                    }

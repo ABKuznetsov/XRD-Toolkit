@@ -98,6 +98,96 @@ function Pause-PreviewStep {
     Start-Sleep -Milliseconds 2000
 }
 
+function Get-SetupProgressMessage {
+    param([string]$LogPath)
+    if (-not (Test-Path -LiteralPath $LogPath)) { return "Starting environment setup" }
+    try { $lines = Get-Content -LiteralPath $LogPath -Tail 40 -ErrorAction Stop } catch { return "Preparing environment" }
+    $joined = ($lines -join "`n")
+    if ($joined -match "Downloading Python") { return "Downloading Python 3.11" }
+    if ($joined -match "Installing Python") { return "Installing Python 3.11" }
+    if ($joined -match "Creating venv") { return "Creating XRD_Toolkit environment" }
+    if ($joined -match "Upgrading pip") { return "Upgrading pip" }
+    if ($joined -match "Failed to install package:\s*([^`r`n]+)") { return "Failed to install package: " + $Matches[1].Trim() }
+    if ($joined -match "Installing package:\s*([^`r`n]+)") {
+        $packageName = $Matches[1].Trim()
+        if ($packageName -match "^(PySide6|pymatgen|mp-api)$") { return "Installing package: $packageName (this can take several minutes)" }
+        return "Installing package: $packageName"
+    }
+    if ($joined -match "Installing XRD Phase Finder requirements") { return "Installing scientific Python packages" }
+    if ($joined -match "Collecting ") { return "Downloading Python packages" }
+    if ($joined -match "Installing collected packages") { return "Installing Python packages" }
+    if ($joined -match "Successfully installed") { return "Finalizing installed packages" }
+    if ($joined -match "setup complete") { return "Environment setup complete" }
+    if ($joined -match "setup failed") { return "Environment setup failed" }
+    for ($idx = $lines.Count - 1; $idx -ge 0; $idx--) {
+        $line = ([string]$lines[$idx]).Trim()
+        if ($line -and $line.Length -lt 120) { return $line }
+    }
+    return "Preparing environment"
+}
+
+function Wait-SetupProcessWithProgress {
+    param([System.Diagnostics.Process]$Process, [string]$LogPath)
+    $lastMessage = ""
+    $tick = 0
+    while (-not $Process.HasExited) {
+        $message = Get-SetupProgressMessage $LogPath
+        if ($message -ne $lastMessage -or ($tick % 6) -eq 0) {
+            $dots = "." * (($tick % 4) + 1)
+            Set-Step 1 "Installing$dots" $message "Blue"
+            Set-ProgressText 28 $message
+            $lastMessage = $message
+        }
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 500
+        $tick++
+    }
+    $Process.Refresh()
+    $message = Get-SetupProgressMessage $LogPath
+    if ($message) {
+        Set-Step 1 "Checking..." $message "Blue"
+        Set-ProgressText 28 $message
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+}
+
+function Show-OwnedQuestion {
+    param([string]$Message, [string]$Title)
+    $script:Form.TopMost = $true
+    $script:Form.Activate()
+    [System.Windows.Forms.Application]::DoEvents()
+    $result = [System.Windows.Forms.MessageBox]::Show($script:Form, $Message, $Title, [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information, [System.Windows.Forms.MessageBoxDefaultButton]::Button1)
+    $script:Form.TopMost = $false
+    return $result
+}
+
+function Download-And-RunUpdate {
+    param([string]$Url, [string]$ExpectedSha256, [string]$LatestVersion)
+    if (-not $Url) { throw "Update installer URL is not available." }
+    Ensure-Folder $updateRoot
+    $fileName = [System.IO.Path]::GetFileName(([System.Uri]$Url).AbsolutePath)
+    if (-not $fileName) { $fileName = "XRD_Phase_Finder_Setup_$LatestVersion.exe" }
+    $targetPath = Join-Path $updateRoot $fileName
+    Set-Step 3 "Downloading" ("Downloading update " + $LatestVersion) "Blue"
+    Set-ProgressText 76 "Downloading update installer"
+    [System.Windows.Forms.Application]::DoEvents()
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $Url -OutFile $targetPath -UseBasicParsing -TimeoutSec 120
+    if ($ExpectedSha256) {
+        Set-Step 3 "Checking" "Verifying downloaded installer" "Blue"
+        Set-ProgressText 78 "Verifying update installer"
+        [System.Windows.Forms.Application]::DoEvents()
+        $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetPath).Hash.ToLowerInvariant()
+        if ($actualSha256 -ne $ExpectedSha256.ToLowerInvariant()) {
+            Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+            throw "Downloaded installer checksum does not match the update manifest."
+        }
+    }
+    Set-Step 3 "Ready" "Starting update installer" "Green"
+    Set-ProgressText 80 "Starting update installer"
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Process -FilePath $targetPath | Out-Null
+}
 function Add-StepRow {
     param(
         [int]$Index,
@@ -260,9 +350,12 @@ try {
         if (-not (Test-Path -LiteralPath $setupBat)) {
             throw "Setup script was not found: $setupBat"
         }
-        $setupProcess = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "`"$setupBat`"") -Wait -PassThru -WindowStyle Hidden
+        $setupLog = Join-Path $logsRoot "setup.log"
+        $setupProcess = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", "`"$setupBat`"") -PassThru -WindowStyle Hidden
+        Wait-SetupProcessWithProgress $setupProcess $setupLog
         if ($setupProcess.ExitCode -ne 0) {
-            throw "Environment setup failed. See log: $(Join-Path $logsRoot 'setup.log')"
+            $lastSetupMessage = Get-SetupProgressMessage $setupLog
+            throw "Environment setup failed: $lastSetupMessage. See log: $setupLog"
         }
     }
     if (-not (Test-Path -LiteralPath $pythonw)) {
@@ -339,15 +432,25 @@ try {
                     if ($summaryLines.Count -eq 0) {
                         $summaryLines.Add("- See the release notes for details.") | Out-Null
                     }
-                    $message = "A new XRD Phase Finder version is available: $latestVersion.`r`nCurrent version: $localVersion`r`n`r`nWhat changed:`r`n" + ($summaryLines -join "`r`n") + "`r`n`r`nOpen the update download now?"
-                    $choice = [System.Windows.Forms.MessageBox]::Show($message, "XRD Phase Finder update available", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Information)
+                    $message = "A new XRD Phase Finder version is available: $latestVersion.`r`nCurrent version: $localVersion`r`n`r`nWhat changed:`r`n" + ($summaryLines -join "`r`n") + "`r`n`r`nDownload and start the installer now?"
+                    $choice = Show-OwnedQuestion $message "XRD Phase Finder update available"
                     if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
                         $downloadTarget = $updateStatus.installer_url
                         if (-not $downloadTarget) { $downloadTarget = $updateStatus.release_url }
-                        if ($downloadTarget) { Start-Process $downloadTarget }
-                        ($updateStatus | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $updateRoot "$AppId.json") -Encoding UTF8
-                        $script:Form.Close()
-                        return
+                        try {
+                            Download-And-RunUpdate $downloadTarget $updateStatus.installer_sha256 $latestVersion
+                            ($updateStatus | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath (Join-Path $updateRoot "$AppId.json") -Encoding UTF8
+                            $script:Form.Close()
+                            return
+                        } catch {
+                            $fallbackMessage = "The automatic update download failed:`r`n" + $_.Exception.Message + "`r`n`r`nOpen the release page instead?"
+                            $fallbackChoice = Show-OwnedQuestion $fallbackMessage "XRD Phase Finder update"
+                            if ($fallbackChoice -eq [System.Windows.Forms.DialogResult]::Yes -and $updateStatus.release_url) {
+                                Start-Process $updateStatus.release_url | Out-Null
+                                $script:Form.Close()
+                                return
+                            }
+                        }
                     }
                 } else {
                     Set-Step 3 "OK" ("No update available. Current version: $localVersion") "Green"
