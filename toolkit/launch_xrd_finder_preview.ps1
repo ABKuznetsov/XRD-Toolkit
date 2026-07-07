@@ -190,16 +190,34 @@ function Download-And-RunUpdate {
     [System.Windows.Forms.Application]::DoEvents()
     Start-Process -FilePath $targetPath | Out-Null
 }
+function Get-StartupLogTail {
+    param([string]$LogPath)
+    if (-not $LogPath -or -not (Test-Path -LiteralPath $LogPath)) { return "" }
+    try {
+        $tail = Get-Content -LiteralPath $LogPath -Tail 18 -ErrorAction Stop
+        $text = ($tail -join "`r`n").Trim()
+        if ($text.Length -gt 1600) { return $text.Substring($text.Length - 1600) }
+        return $text
+    } catch {
+        return ""
+    }
+}
+
 function Wait-ApplicationMainWindow {
     param(
         [System.Diagnostics.Process]$Process,
-        [int]$TimeoutSeconds = 120
+        [int]$TimeoutSeconds = 120,
+        [string]$LogPath = ""
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $tick = 0
     while ((Get-Date) -lt $deadline) {
         if ($Process.HasExited) {
-            throw "XRD Phase Finder closed during startup. Exit code: $($Process.ExitCode)"
+            $details = Get-StartupLogTail $LogPath
+            if ($details) {
+                throw "XRD Phase Finder closed during startup. Exit code: $($Process.ExitCode)`r`n`r`nStartup log:`r`n$details`r`n`r`nFull log: $LogPath"
+            }
+            throw "XRD Phase Finder closed during startup. Exit code: $($Process.ExitCode)`r`nFull log: $LogPath"
         }
         $Process.Refresh()
         if ($Process.MainWindowHandle -ne [IntPtr]::Zero) {
@@ -212,7 +230,11 @@ function Wait-ApplicationMainWindow {
         Start-Sleep -Milliseconds 500
         $tick++
     }
-    throw "XRD Phase Finder is running, but the main window did not appear within $TimeoutSeconds seconds."
+    $details = Get-StartupLogTail $LogPath
+    if ($details) {
+        throw "XRD Phase Finder is running, but the main window did not appear within $TimeoutSeconds seconds.`r`n`r`nStartup log:`r`n$details`r`n`r`nFull log: $LogPath"
+    }
+    throw "XRD Phase Finder is running, but the main window did not appear within $TimeoutSeconds seconds.`r`nFull log: $LogPath"
 }
 function Add-StepRow {
     param(
@@ -285,6 +307,7 @@ $dataRoot = Join-Path $finderRoot "data"
 $logsRoot = Join-Path $toolkitRoot "logs"
 $updateRoot = Join-Path $toolkitRoot "updates"
 $pythonw = Join-Path $envRoot "Scripts\pythonw.exe"
+$pythonExe = Join-Path $envRoot "Scripts\python.exe"
 $setupBat = Join-Path $appRoot "toolkit\setup_xrd_toolkit_env.bat"
 $manifestPath = Join-Path $appRoot "toolkit\manifest.json"
 $appManifestPath = Join-Path $appRoot "XRD_Finder\app.json"
@@ -387,6 +410,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $pythonw)) {
         throw "Python launcher was not found: $pythonw"
+    }
+    if (-not (Test-Path -LiteralPath $pythonExe)) {
+        throw "Python executable was not found: $pythonExe"
     }
     Ensure-Folder (Join-Path $dataRoot "cod_cache")
     Ensure-Folder (Join-Path $dataRoot "cod_cache\rruff")
@@ -505,8 +531,24 @@ try {
     } else {
         $env:PYTHONPATH = $appPackageRoot
     }
-    $appProcess = Start-Process -FilePath $pythonw -ArgumentList @("-m", $entryModule) -WorkingDirectory $appRoot -PassThru
-    Wait-ApplicationMainWindow $appProcess 120 | Out-Null
+    $startupLog = Join-Path $logsRoot "xrd_finder_startup.log"
+    "[$(Get-Date -Format s)] Starting XRD Phase Finder from $appRoot" | Set-Content -LiteralPath $startupLog -Encoding UTF8
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $pythonExe
+    $startInfo.Arguments = "-m $entryModule"
+    $startInfo.WorkingDirectory = $appRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $appProcess = New-Object System.Diagnostics.Process
+    $appProcess.StartInfo = $startInfo
+    Register-ObjectEvent -InputObject $appProcess -EventName OutputDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
+    Register-ObjectEvent -InputObject $appProcess -EventName ErrorDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
+    $null = $appProcess.Start()
+    $appProcess.BeginOutputReadLine()
+    $appProcess.BeginErrorReadLine()
+    Wait-ApplicationMainWindow $appProcess 120 $startupLog | Out-Null
     Set-Step 4 "OK" "XRD Phase Finder window is ready" "Green"
     Set-ProgressText 100 "Ready"
     [System.Windows.Forms.Application]::DoEvents()
