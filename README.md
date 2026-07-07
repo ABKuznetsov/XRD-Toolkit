@@ -42,37 +42,39 @@ Large third-party databases are **not bundled** with this repository or installe
 The main mechanism behind XRD Phase Finder is intentionally pragmatic: it first helps the user find chemically plausible candidates, then compares each candidate's own strongest calculated or measured peaks against the active experimental pattern. This is meant for phase identification and pre-refinement screening, not as a replacement for full Rietveld refinement.
 
 ---
-# Screenshots
+# Interface Overview
 
-## Phase Search Overview
+The screenshots below show representative parts of the XRD Phase Finder workflow. The interface is under active development, so exact button placement and labels may change between releases.
+
+## Phase Search Workspace
 
 ![Phase search overview](XRD_Finder/docs/screenshots/phase-search-overview.png)
 
-The main Phase Finder view combines an observed XRD pattern, selected candidate phases, calculated profiles, peak markers and element-based search controls.
+The main workspace combines the active experimental pattern, candidate search results, selected phase overlays and element-based filters. The goal is to keep search, preview and interpretation in one window.
 
-## Candidate Preview
+## Candidate Preview and Matching
 
 ![Candidate preview](XRD_Finder/docs/screenshots/candidate-preview.png)
 
-Single-clicking a candidate previews its strongest reference or calculated peaks directly in the experimental pattern area. Double-clicking a structural candidate adds it to the selected phase set.
+Candidate rows can be browsed to preview calculated or measured reference peaks against the active XRD pattern. Structural candidates can be added to the selected phase set for profile comparison.
 
 ## Multi-pattern Comparison
 
 ![Multi-pattern stack](XRD_Finder/docs/screenshots/multi-pattern-stack.png)
 
-Several checked XRD patterns can be displayed together with a controlled vertical offset. The highlighted row in the project tree remains the active pattern for search and candidate preview.
+Multiple checked XRD patterns can be displayed together with a controlled vertical offset. The highlighted pattern remains the active pattern for search and candidate preview.
 
 ## Compound Card
 
 ![Compound card](XRD_Finder/docs/screenshots/compound-card.png)
 
-The compound card shows phase metadata, formula, I/Ic estimate, publication/source links, space group, cell parameters, atom positions and diffraction lines when available.
+The compound card is intended to collect available phase metadata: formula, source, links, cell parameters, atom positions and diffraction lines when the source provides them.
 
 ## Database Management
 
 ![Database panel](XRD_Finder/docs/screenshots/database-panel.png)
 
-The Databases tab controls which sources participate in search and provides explicit update/clear actions for local caches.
+The Databases tab manages local user libraries, indexed reference data, external source settings and cache/update/clear actions. Restricted databases are used only when the user provides data and has the right to access it.
 
 # Features
 
@@ -188,7 +190,7 @@ The `?` button in the application opens a compact in-app helper with the same co
 
 XRD Phase Finder creates a shared per-user environment named `XRD_Toolkit` under the user's application-data folder on Windows. Future XRD applications from the same toolkit can reuse this environment.
 
-Large external crystallographic databases are optional and user-managed. COD, RRUFF, PDF-2, Materials Project and CCDC/CSD data are not redistributed with the installer.
+Large external crystallographic databases are user-managed. COD, RRUFF, PDF-2, Materials Project and CCDC/CSD data are not redistributed with the installer.
 
 ---
 
@@ -298,23 +300,34 @@ sudo dnf install python3 python3-pip xcb-util-cursor mesa-libEGL
 
 ---
 
-# Opening Files from the Command Line
+# Source Checkout Launching
 
-GUI
+Most Windows users should install and launch XRD Phase Finder through the Windows installer and Start Menu shortcut. The commands below are mainly for developers or users running directly from a source checkout.
+
+Graphical launchers:
+
+```text
+XRD_Finder\run_finder.bat
+./XRD_Finder/run_finder.command
+./XRD_Finder/run_finder.sh
+```
+
+Command-line launchers:
+
+```text
+XRD_Finder\run_finder_cli.bat
+./XRD_Finder/run_finder_cli.command
+./XRD_Finder/run_finder_cli.sh
+```
+
+The graphical launcher can also receive initial files when started from a source checkout:
 
 ```text
 XRD_Finder\run_finder.bat --pattern "path\to\pattern.xy" --cif "path\to\phase.cif"
-./XRD_Finder/run_finder.command --pattern "path/to/pattern.xy" --cif "path/to/phase.cif"
 ./XRD_Finder/run_finder.sh --pattern "path/to/pattern.xy" --cif "path/to/phase.cif"
 ```
 
-CLI
-
-```text
-XRD_Finder\run_finder_cli.bat "path\to\pattern.xy" --cif "path\to\phase.cif"
-./XRD_Finder/run_finder_cli.command "path/to/pattern.xy" --cif "path/to/phase.cif"
-./XRD_Finder/run_finder_cli.sh "path/to/pattern.xy" --cif "path/to/phase.cif"
-```
+For normal interactive work, importing XRD/CIF files from the application window is preferred.
 
 ---
 
