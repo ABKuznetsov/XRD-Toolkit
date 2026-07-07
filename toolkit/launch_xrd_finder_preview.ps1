@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$AppId = "xrd_finder"
 )
 
@@ -255,12 +255,20 @@ function Wait-ApplicationMainWindow {
     param(
         [System.Diagnostics.Process]$Process,
         [int]$TimeoutSeconds = 120,
-        [string]$LogPath = ""
+        [string]$LogPath = "",
+        [string]$ReadyFile = ""
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $tick = 0
     while ((Get-Date) -lt $deadline) {
+        if ($ReadyFile -and (Test-Path -LiteralPath $ReadyFile)) {
+            return $true
+        }
         if ($Process.HasExited) {
+            if ($Process.ExitCode -eq 0) {
+                Write-LauncherLog "Python app exited normally before splash detected a window. Closing preview."
+                return $true
+            }
             $details = Get-StartupLogTail $LogPath
             if ($details) {
                 throw "XRD Phase Finder closed during startup. Exit code: $($Process.ExitCode)`r`n`r`nStartup log:`r`n$details`r`n`r`nFull log: $LogPath"
@@ -378,6 +386,14 @@ $installerUrl = ""
 $installerSha256 = ""
 $releaseUrl = ""
 $entryModule = "xrd_finder.apps.finder_gui"
+if (Test-Path -LiteralPath $appManifestPath) {
+    try {
+        $earlyAppManifest = Get-Content -LiteralPath $appManifestPath -Raw | ConvertFrom-Json
+        if ($earlyAppManifest.version) { $localVersion = [string]$earlyAppManifest.version }
+        if ($earlyAppManifest.entry_module) { $entryModule = [string]$earlyAppManifest.entry_module }
+    } catch {
+    }
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -452,7 +468,7 @@ $brand = New-Label "XRD Phase Finder" 58 390 320 46 24 "Bold" ([System.Drawing.C
 $leftPanel.Controls.Add($brand)
 $subtitle = New-Label "Phase identification from`r`nX-ray diffraction data" 60 438 290 58 12 "Regular" ([System.Drawing.Color]::FromArgb(71, 85, 105))
 $leftPanel.Controls.Add($subtitle)
-$versionLabel = New-Label "Version 1.0.4" 60 512 140 24 9 "Regular" ([System.Drawing.Color]::FromArgb(100, 116, 139))
+$versionLabel = New-Label "Version $localVersion" 60 512 140 24 9 "Regular" ([System.Drawing.Color]::FromArgb(100, 116, 139))
 $leftPanel.Controls.Add($versionLabel)
 
 $title = New-Label "Starting XRD Phase Finder..." 430 46 420 42 19 "Bold" ([System.Drawing.Color]::FromArgb(15, 23, 42))
@@ -552,6 +568,7 @@ try {
             $remoteUrl = $manifestUrl
             if ($updateManifestUrl) { $remoteUrl = $updateManifestUrl }
             $remote = Invoke-RestMethod -Uri $remoteUrl -UseBasicParsing -TimeoutSec 5
+            if ($remote -is [string]) { $remote = $remote | ConvertFrom-Json }
             $remoteApp = $remote
             if ($remote.apps -and $remote.apps.$AppId) { $remoteApp = $remote.apps.$AppId }
             if ($remoteApp.version) {
@@ -629,6 +646,8 @@ try {
         $env:PYTHONPATH = $appPackageRoot
     }
     $startupLog = Join-Path $logsRoot "xrd_finder_startup.log"
+    $readyFile = Join-Path $logsRoot "xrd_finder_ready.flag"
+    Remove-Item -LiteralPath $readyFile -Force -ErrorAction SilentlyContinue
     Write-LauncherLog "Starting Python app with $pythonExe -m $entryModule"
     "[$(Get-Date -Format s)] Starting XRD Phase Finder from $appRoot" | Set-Content -LiteralPath $startupLog -Encoding UTF8
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -641,6 +660,7 @@ try {
     $startInfo.RedirectStandardError = $true
     $startInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
     $startInfo.EnvironmentVariables["XRD_FINDER_DATA_DIR"] = $dataRoot
+    $startInfo.EnvironmentVariables["XRD_FINDER_READY_FILE"] = $readyFile
     $startInfo.EnvironmentVariables["MPLCONFIGDIR"] = Join-Path $finderRoot "matplotlib"
     $startInfo.EnvironmentVariables["PYTHONPATH"] = $env:PYTHONPATH
     $startInfo.EnvironmentVariables["QT_OPENGL"] = "software"
@@ -655,7 +675,7 @@ try {
     Write-LauncherLog "Python app process started. PID=$($appProcess.Id)"
     $appProcess.BeginOutputReadLine()
     $appProcess.BeginErrorReadLine()
-    Wait-ApplicationMainWindow $appProcess 120 $startupLog | Out-Null
+    Wait-ApplicationMainWindow $appProcess 120 $startupLog $readyFile | Out-Null
     Write-LauncherLog "Main application window is ready."
     Set-Step 4 "OK" "XRD Phase Finder window is ready" "Green"
     Set-ProgressText 100 "Ready"

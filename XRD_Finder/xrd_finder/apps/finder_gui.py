@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -44,6 +45,13 @@ def main() -> int:
         window.setWindowIcon(QIcon(str(icon_path)))
     window.setWindowTitle("XRD Phase Finder")
     window.show()
+    app.processEvents()
+    ready_file = os.environ.get("XRD_FINDER_READY_FILE")
+    if ready_file:
+        try:
+            Path(ready_file).write_text("ready", encoding="utf-8")
+        except OSError:
+            pass
     return int(app.exec())
 
 

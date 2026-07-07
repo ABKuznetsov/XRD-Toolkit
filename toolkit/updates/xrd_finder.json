@@ -1,4 +1,4 @@
-﻿{
+{
     "app_id":  "xrd_finder",
     "name":  "XRD Phase Finder",
     "version":  "1.0.4",
@@ -10,9 +10,9 @@
     "assets":  [
                    {
                        "name":  "XRD_Phase_Finder_Setup_1.0.4.exe",
-                       "sha256":  "fe58330d466a74d262d9efaa2be5178b5997bc1a8bb8341ae393aa25a42cfc09",
+                       "sha256":  "15c35fb7f8c1e2aa7da5ebfd27d30d2f37846251b33d7f2119740e2f9afda5f7",
                        "type":  "installer",
-                       "size_bytes":  5833938,
+                       "size_bytes":  5834129,
                        "platform":  "windows-x64",
                        "url":  "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.0.4/XRD_Phase_Finder_Setup_1.0.4.exe"
                    }
