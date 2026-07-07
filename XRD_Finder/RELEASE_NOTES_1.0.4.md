@@ -1,6 +1,9 @@
-﻿# XRD Phase Finder 1.0.4
+# XRD Phase Finder 1.0.4
 
 Patch release focused on Windows 10 startup reliability, in-app update testing, and basic project tree management.
+
+## Download
+- [Download Windows installer: XRD_Phase_Finder_Setup_1.0.4.exe](https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.0.4/XRD_Phase_Finder_Setup_1.0.4.exe)
 
 ## Changed
 - Pinned PySide6 to a Windows 10 friendly Qt runtime line instead of installing the newest available Qt wheel.
