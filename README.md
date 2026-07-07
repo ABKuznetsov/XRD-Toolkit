@@ -22,13 +22,13 @@ Open or publicly accessible data sources and services that XRD Phase Finder can 
 - RRUFF Project measured powder patterns
 - user-provided CIF folders and local phase libraries
 
-Restricted, proprietary or license-controlled sources can also be used only when the user already has the legal right to access them:
+Support for restricted, proprietary or license-controlled sources is under active development. These sources will be available only when the user already has the legal right to access them:
 
 - PDF-2 reference-card data from a user-provided local PDF-2 installation or folder
 - CCDC/CSD data through the user's own CCDC Python API installation and valid license/access rights
 - any other local commercial, institutional or private crystallographic database supplied by the user
 
-The developers of XRD Phase Finder **do not distribute closed, proprietary or license-controlled databases**. The program only provides optional connectors, import/indexing tools and local search workflows. Users are responsible for ensuring that they have the right to access and process any restricted database, and for following the license terms, attribution rules and citation requirements of each data source.
+The developers of XRD Phase Finder **do not distribute closed, proprietary or license-controlled databases**. The project may provide optional connectors, import/indexing tools and local search workflows, but access to restricted data remains entirely the user's responsibility. Users must ensure that they have the right to access and process any restricted database, and must follow the license terms, attribution rules and citation requirements of each data source.
 
 XRD Phase Finder also builds on the open-source Python scientific stack, including:
 
@@ -472,4 +472,5 @@ Institute geology and mineralogy SB RAS
 
 GitHub:
 https://github.com/ABKuznetsov
+
 
