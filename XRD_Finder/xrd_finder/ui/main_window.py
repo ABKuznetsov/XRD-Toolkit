@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -174,6 +174,73 @@ class MainWindow(QMainWindow):
         self._refresh_project()
         self.statusBar().showMessage(f"Imported CIF phase: {Path(path).name}", 4000)
 
+    def _rename_project_object(self, object_type: str, object_id: str) -> None:
+        if self.project is None:
+            return
+        current_name = ""
+        if object_type == "project" and object_id == self.project.id:
+            current_name = self.project.name
+        elif object_type == "pattern":
+            current = next((pattern for pattern in self.project.patterns if pattern.id == object_id), None)
+            current_name = current.name if current is not None else ""
+        elif object_type == "phase":
+            current = next((phase for phase in self.project.phases if phase.id == object_id), None)
+            current_name = current.name if current is not None else ""
+        if not current_name:
+            return
+        new_name, accepted = QInputDialog.getText(self, "Rename", "Name:", text=current_name)
+        if not accepted:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == current_name:
+            return
+        if object_type == "project" and object_id == self.project.id:
+            self.project.name = new_name
+            self.setWindowTitle(f"XRD Phase Finder - {self.project.name}")
+        elif object_type == "pattern":
+            current = next((pattern for pattern in self.project.patterns if pattern.id == object_id), None)
+            if current is None:
+                return
+            current.name = new_name
+        elif object_type == "phase":
+            current = next((phase for phase in self.project.phases if phase.id == object_id), None)
+            if current is None:
+                return
+            current.name = new_name
+        self.project.touch()
+        self._refresh_project()
+        self.statusBar().showMessage(f"Renamed to {new_name}", 3000)
+
+    def _delete_project_object(self, object_type: str, object_id: str) -> None:
+        if self.project is None or object_type not in {"pattern", "phase"}:
+            return
+        if object_type == "pattern":
+            current = next((pattern for pattern in self.project.patterns if pattern.id == object_id), None)
+            label = "XRD pattern"
+        else:
+            current = next((phase for phase in self.project.phases if phase.id == object_id), None)
+            label = "CIF phase"
+        if current is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            f"Delete {label}",
+            f"Delete {label} '{current.name}' from this project?\n\nThis removes it from the project tree and cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if object_type == "pattern":
+            self.project.patterns = [pattern for pattern in self.project.patterns if pattern.id != object_id]
+        else:
+            structure_id = current.structure_id
+            self.project.phases = [phase for phase in self.project.phases if phase.id != object_id]
+            if structure_id and not any(phase.structure_id == structure_id for phase in self.project.phases):
+                self.project.structures = [structure for structure in self.project.structures if structure.id != structure_id]
+        self.project.touch()
+        self._refresh_project()
+        self.statusBar().showMessage(f"Deleted {current.name}", 3000)
     def _refresh_project(self) -> None:
         if self.project is None:
             return
@@ -222,3 +289,4 @@ class MainWindow(QMainWindow):
             window.project_changed.connect(self._refresh_project)
         self.analysis_windows.append(window)
         window.show()
+

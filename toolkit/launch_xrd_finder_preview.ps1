@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$AppId = "xrd_finder"
 )
 
@@ -161,6 +161,55 @@ function Show-OwnedQuestion {
     return $result
 }
 
+function Invoke-UpdateDownload {
+    param(
+        [string]$Url,
+        [string]$OutFile
+    )
+    if (-not $Url) { throw "Update installer URL is not available." }
+    $errors = New-Object System.Collections.Generic.List[string]
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    } catch {
+    }
+
+    try {
+        Write-LauncherLog "Downloading update with Invoke-WebRequest: $Url"
+        Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300 -MaximumRedirection 10 -Headers @{ "User-Agent" = "XRD-Phase-Finder-Updater" }
+        if ((Test-Path -LiteralPath $OutFile) -and ((Get-Item -LiteralPath $OutFile).Length -gt 1024)) { return }
+        $errors.Add("Invoke-WebRequest produced an empty or incomplete file.") | Out-Null
+    } catch {
+        $errors.Add("Invoke-WebRequest: " + $_.Exception.Message) | Out-Null
+    }
+
+    try {
+        Write-LauncherLog "Downloading update with BITS: $Url"
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        Start-BitsTransfer -Source $Url -Destination $OutFile -DisplayName "XRD Phase Finder update" -Description "Downloading XRD Phase Finder update" -ErrorAction Stop
+        if ((Test-Path -LiteralPath $OutFile) -and ((Get-Item -LiteralPath $OutFile).Length -gt 1024)) { return }
+        $errors.Add("BITS produced an empty or incomplete file.") | Out-Null
+    } catch {
+        $errors.Add("BITS: " + $_.Exception.Message) | Out-Null
+    }
+
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+        try {
+            Write-LauncherLog "Downloading update with curl.exe: $Url"
+            Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+            $curlLog = Join-Path ([System.IO.Path]::GetDirectoryName($OutFile)) "curl_update.log"
+            $curlProcess = Start-Process -FilePath $curl.Source -ArgumentList @("-L", "--fail", "--retry", "3", "--connect-timeout", "30", "--max-time", "300", "-A", "XRD-Phase-Finder-Updater", "-o", $OutFile, $Url) -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $curlLog -RedirectStandardError $curlLog
+            if ($curlProcess.ExitCode -eq 0 -and (Test-Path -LiteralPath $OutFile) -and ((Get-Item -LiteralPath $OutFile).Length -gt 1024)) { return }
+            $errors.Add("curl.exe exit code: " + $curlProcess.ExitCode) | Out-Null
+        } catch {
+            $errors.Add("curl.exe: " + $_.Exception.Message) | Out-Null
+        }
+    } else {
+        $errors.Add("curl.exe is not available.") | Out-Null
+    }
+
+    throw "Could not download the update installer automatically.`r`n" + ($errors -join "`r`n")
+}
 function Download-And-RunUpdate {
     param([string]$Url, [string]$ExpectedSha256, [string]$LatestVersion)
     if (-not $Url) { throw "Update installer URL is not available." }
@@ -173,8 +222,7 @@ function Download-And-RunUpdate {
     Set-Step 3 "Downloading" ("Downloading update " + $LatestVersion) "Blue"
     Set-ProgressText 76 "Downloading update installer"
     [System.Windows.Forms.Application]::DoEvents()
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $Url -OutFile $targetPath -UseBasicParsing -TimeoutSec 120
+    Invoke-UpdateDownload $Url $targetPath
     if ($ExpectedSha256) {
         Set-Step 3 "Checking" "Verifying downloaded installer" "Blue"
         Set-ProgressText 78 "Verifying update installer"
@@ -220,7 +268,7 @@ function Wait-ApplicationMainWindow {
             throw "XRD Phase Finder closed during startup. Exit code: $($Process.ExitCode)`r`nFull log: $LogPath"
         }
         $Process.Refresh()
-        if ($Process.MainWindowHandle -ne [IntPtr]::Zero) {
+        if ($Process.MainWindowHandle -ne [IntPtr]::Zero -or (Test-ProcessHasVisibleWindow $Process.Id)) {
             return $true
         }
         $dots = "." * (($tick % 4) + 1)
@@ -306,6 +354,16 @@ $finderRoot = Join-Path $toolkitRoot "XRD_Finder"
 $dataRoot = Join-Path $finderRoot "data"
 $logsRoot = Join-Path $toolkitRoot "logs"
 $updateRoot = Join-Path $toolkitRoot "updates"
+$launcherLog = Join-Path $logsRoot "launcher_preview.log"
+function Write-LauncherLog {
+    param([string]$Message)
+    try {
+        if (-not (Test-Path -LiteralPath $logsRoot)) { New-Item -ItemType Directory -Path $logsRoot -Force | Out-Null }
+        "[$(Get-Date -Format s)] $Message" | Add-Content -LiteralPath $launcherLog -Encoding UTF8
+    } catch {
+    }
+}
+Write-LauncherLog "Preview launcher started from $appRoot"
 $pythonw = Join-Path $envRoot "Scripts\pythonw.exe"
 $pythonExe = Join-Path $envRoot "Scripts\python.exe"
 $setupBat = Join-Path $appRoot "toolkit\setup_xrd_toolkit_env.bat"
@@ -324,6 +382,41 @@ $entryModule = "xrd_finder.apps.finder_gui"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class XrdWindowFinder {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern int GetWindowTextLength(IntPtr hWnd);
+}
+"@
+
+function Test-ProcessHasVisibleWindow {
+    param([int]$ProcessId)
+    $found = $false
+    $callback = [XrdWindowFinder+EnumWindowsProc]{
+        param([IntPtr]$hWnd, [IntPtr]$lParam)
+        [uint32]$windowProcessId = 0
+        [void][XrdWindowFinder]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
+        if ($windowProcessId -eq [uint32]$ProcessId -and [XrdWindowFinder]::IsWindowVisible($hWnd) -and [XrdWindowFinder]::GetWindowTextLength($hWnd) -gt 0) {
+            $script:XrdVisibleWindowFound = $true
+            return $false
+        }
+        return $true
+    }
+    $script:XrdVisibleWindowFound = $false
+    [void][XrdWindowFinder]::EnumWindows($callback, [IntPtr]::Zero)
+    $found = [bool]$script:XrdVisibleWindowFound
+    Remove-Variable -Name XrdVisibleWindowFound -Scope Script -ErrorAction SilentlyContinue
+    return $found
+}
 
 $script:Form = New-Object System.Windows.Forms.Form
 $script:Form.Text = "XRD Phase Finder"
@@ -359,7 +452,7 @@ $brand = New-Label "XRD Phase Finder" 58 390 320 46 24 "Bold" ([System.Drawing.C
 $leftPanel.Controls.Add($brand)
 $subtitle = New-Label "Phase identification from`r`nX-ray diffraction data" 60 438 290 58 12 "Regular" ([System.Drawing.Color]::FromArgb(71, 85, 105))
 $leftPanel.Controls.Add($subtitle)
-$versionLabel = New-Label "Version 1.0.2" 60 512 140 24 9 "Regular" ([System.Drawing.Color]::FromArgb(100, 116, 139))
+$versionLabel = New-Label "Version 1.0.4" 60 512 140 24 9 "Regular" ([System.Drawing.Color]::FromArgb(100, 116, 139))
 $leftPanel.Controls.Add($versionLabel)
 
 $title = New-Label "Starting XRD Phase Finder..." 430 46 420 42 19 "Bold" ([System.Drawing.Color]::FromArgb(15, 23, 42))
@@ -529,12 +622,14 @@ try {
     $env:QT_OPENGL = "software"
     $env:QT_QUICK_BACKEND = "software"
     $env:QT_ANGLE_PLATFORM = "warp"
+    $env:QT_QPA_PLATFORM = "windows"
     if ($env:PYTHONPATH) {
         $env:PYTHONPATH = "$appPackageRoot;$env:PYTHONPATH"
     } else {
         $env:PYTHONPATH = $appPackageRoot
     }
     $startupLog = Join-Path $logsRoot "xrd_finder_startup.log"
+    Write-LauncherLog "Starting Python app with $pythonExe -m $entryModule"
     "[$(Get-Date -Format s)] Starting XRD Phase Finder from $appRoot" | Set-Content -LiteralPath $startupLog -Encoding UTF8
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $pythonExe
@@ -551,19 +646,23 @@ try {
     $startInfo.EnvironmentVariables["QT_OPENGL"] = "software"
     $startInfo.EnvironmentVariables["QT_QUICK_BACKEND"] = "software"
     $startInfo.EnvironmentVariables["QT_ANGLE_PLATFORM"] = "warp"
+    $startInfo.EnvironmentVariables["QT_QPA_PLATFORM"] = "windows"
     $appProcess = New-Object System.Diagnostics.Process
     $appProcess.StartInfo = $startInfo
     Register-ObjectEvent -InputObject $appProcess -EventName OutputDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
     Register-ObjectEvent -InputObject $appProcess -EventName ErrorDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
     $null = $appProcess.Start()
+    Write-LauncherLog "Python app process started. PID=$($appProcess.Id)"
     $appProcess.BeginOutputReadLine()
     $appProcess.BeginErrorReadLine()
     Wait-ApplicationMainWindow $appProcess 120 $startupLog | Out-Null
+    Write-LauncherLog "Main application window is ready."
     Set-Step 4 "OK" "XRD Phase Finder window is ready" "Green"
     Set-ProgressText 100 "Ready"
     [System.Windows.Forms.Application]::DoEvents()
     Start-Sleep -Milliseconds 400
 } catch {
+    Write-LauncherLog ("Startup failed: " + $_.Exception.Message)
     Set-ProgressText 100 "Failed"
     if ($script:StepStatusLabels.Count -gt 0) {
         Set-Step 4 "Failed" $_.Exception.Message "Red"
@@ -574,6 +673,9 @@ try {
     $script:Form.Close()
     $script:Form.Dispose()
 }
+
+
+
 
 
 

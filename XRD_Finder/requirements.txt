@@ -1,7 +1,7 @@
 gemmi
 numpy
 pyqtgraph
-PySide6
+PySide6==6.7.3
 scipy
 certifi
 mp-api

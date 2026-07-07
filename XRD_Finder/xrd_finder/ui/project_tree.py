@@ -1,13 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtWidgets import QMenu, QTreeWidget, QTreeWidgetItem
 
 from xrd_finder.core.project import Project
 
 
 class ProjectTree(QTreeWidget):
     object_open_requested = Signal(str, str)
+    object_rename_requested = Signal(str, str)
+    object_delete_requested = Signal(str, str)
     pattern_selection_changed = Signal(list)
     phase_selection_changed = Signal(list)
 
@@ -33,9 +35,53 @@ class ProjectTree(QTreeWidget):
         self._phase_order: list[str] = []
         self._phase_items: dict[str, QTreeWidgetItem] = {}
         self._phase_names: dict[str, str] = {}
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         self.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.itemChanged.connect(self._on_item_changed)
 
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        current = self.currentItem()
+        data = current.data(0, 256) if current is not None else None
+        if data:
+            object_type, object_id = data
+            if event.key() == Qt.Key.Key_F2 and object_type in {"project", "pattern", "phase"}:
+                self.object_rename_requested.emit(object_type, object_id)
+                return
+            if event.key() == Qt.Key.Key_Delete and object_type in {"pattern", "phase"}:
+                self.object_delete_requested.emit(object_type, object_id)
+                return
+        super().keyPressEvent(event)
+
+    def _show_context_menu(self, position: QPoint) -> None:
+        item = self.itemAt(position)
+        if item is None:
+            return
+        data = item.data(0, 256)
+        if not data:
+            return
+        object_type, object_id = data
+        if object_type not in {"project", "pattern", "phase"}:
+            return
+        menu = QMenu(self)
+        open_action = None
+        if object_type in {"pattern", "phase"}:
+            open_action = menu.addAction("Open")
+        rename_action = menu.addAction("Rename")
+        delete_action = None
+        if object_type in {"pattern", "phase"}:
+            delete_action = menu.addAction("Delete")
+        action = menu.exec(self.viewport().mapToGlobal(position))
+        if action is None:
+            return
+        if open_action is not None and action == open_action:
+            self.object_open_requested.emit(object_type, object_id)
+            return
+        if action == rename_action:
+            self.object_rename_requested.emit(object_type, object_id)
+            return
+        if delete_action is not None and action == delete_action:
+            self.object_delete_requested.emit(object_type, object_id)
     def set_project(self, project: Project) -> None:
         self._updating = True
         self.clear()
@@ -250,3 +296,5 @@ class ProjectTree(QTreeWidget):
             phase_numbers[phase_id] = number
             number += 1
         return {"patterns": pattern_numbers, "phases": phase_numbers}
+
+

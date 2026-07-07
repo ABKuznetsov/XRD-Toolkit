@@ -90,7 +90,7 @@ exit /b 0
 set "REQ=%~1"
 echo Installing package: %REQ%
 echo Installing package: %REQ%>> "%LOG_FILE%"
-if /I "%REQ%"=="PySide6" (
+if /I "%REQ:~0,7%"=="PySide6" (
     echo PySide6 is a large package. Downloading can take several minutes on a slow connection.
     echo PySide6 is a large package. Downloading can take several minutes on a slow connection.>> "%LOG_FILE%"
 )
@@ -98,7 +98,7 @@ if /I "%REQ%"=="pymatgen" (
     echo pymatgen and its scientific dependencies can take several minutes.
     echo pymatgen and its scientific dependencies can take several minutes.>> "%LOG_FILE%"
 )
-call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary "%REQ%" >> "%LOG_FILE%" 2>&1
+call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary --upgrade --upgrade-strategy eager "%REQ%" >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     echo Failed to install package: %REQ%
     echo Failed to install package: %REQ%>> "%LOG_FILE%"
@@ -112,6 +112,7 @@ exit /b 0
 >> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_OPENGL=software"
 >> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_QUICK_BACKEND=software"
 >> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_ANGLE_PLATFORM=warp"
+>> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_QPA_PLATFORM=windows"
 >> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m xrd_finder.apps.finder_gui %%*
 > "%XRD_TOOLKIT_BIN%\xrd-python.cmd" echo @echo off
 >> "%XRD_TOOLKIT_BIN%\xrd-python.cmd" echo "%XRD_TOOLKIT_ENV%\Scripts\python.exe" %%*
@@ -180,6 +181,7 @@ exit /b 0
 echo XRD_Toolkit setup failed. See log: %LOG_FILE%
 echo [%date% %time%] setup failed.>> "%LOG_FILE%"
 exit /b 1
+
 
 
 
