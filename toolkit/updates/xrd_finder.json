@@ -29,7 +29,7 @@
     "Add the foundation for separate Match (%) and experimental Gain (%) candidate metrics.",
     "Keep Match (%), Gain (%) and I/Ic as separate candidate-table values for future tuning.",
     "Use the shared robust XRD background estimator inside the Finder calculation path.",
-    "Build calculated Finder profiles explicitly with Cu Kα1/Kα2 doublet lines."
+    "Build calculated Finder profiles explicitly with Cu K-alpha1/K-alpha2 doublet lines."
   ],
   "installer_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.1/XRD_Phase_Finder_Setup_1.1.1.exe",
   "installer_sha256": "515a8dd766e730c3204f93dc793d7a3e90c7180c525b29cdc0f3f2b993e72722"
