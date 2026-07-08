@@ -36,6 +36,22 @@ class ObservedPatternPlotData:
         }
 
 
+
+def normalize_intensity(data: np.ndarray, target_max: float = 100.0) -> np.ndarray:
+    values = np.asarray(data, dtype=float)
+    if values.ndim != 2 or values.shape[1] < 2 or len(values) == 0:
+        return values
+    result = np.array(values[:, :2], dtype=float, copy=True)
+    y = result[:, 1]
+    finite_y = y[np.isfinite(y)]
+    if not finite_y.size:
+        return result
+    scale = float(np.nanmax(finite_y))
+    if not np.isfinite(scale) or scale <= 0.0:
+        return result
+    result[:, 1] = y * (float(target_max) / scale)
+    return result
+
 def processed_pattern_data(pattern: Pattern | None) -> np.ndarray | None:
     if pattern is None or not pattern.processed_points:
         return None
@@ -60,6 +76,7 @@ def observed_pattern_data(pattern: Pattern | None) -> np.ndarray | None:
 def load_observed_patterns(
     patterns: list[Pattern],
     active_override: tuple[str, np.ndarray, str] | None = None,
+    normalize: bool = False,
 ) -> list[ObservedPatternPlotData]:
     loaded: list[ObservedPatternPlotData] = []
     for pattern in patterns:
@@ -79,6 +96,8 @@ def load_observed_patterns(
             continue
         if data is None or len(data) == 0:
             continue
+        if normalize:
+            data = normalize_intensity(data)
         x = np.asarray(data[:, 0], dtype=float)
         y = np.asarray(data[:, 1], dtype=float)
         finite_y = y[np.isfinite(y)]

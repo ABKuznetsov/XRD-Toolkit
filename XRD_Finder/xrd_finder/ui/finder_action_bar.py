@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QWidget
 
 from xrd_finder.ui.theme import action_button_style
 
@@ -14,6 +14,7 @@ class FinderActionBar(QWidget):
     resetViewRequested = Signal()
     patternDisplayModeChanged = Signal(str)
     patternOffsetPercentChanged = Signal(int)
+    normalizePatternsChanged = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -21,6 +22,7 @@ class FinderActionBar(QWidget):
         self.pattern_display_mode = QComboBox()
         self.pattern_offset_slider = QSlider()
         self.pattern_offset_value = QLabel()
+        self.normalize_patterns_checkbox = QCheckBox("Normalize")
         self._build_ui()
 
     def search_text(self) -> str:
@@ -73,6 +75,8 @@ class FinderActionBar(QWidget):
         self.pattern_offset_value.setText("10%")
         self.pattern_offset_slider.valueChanged.connect(self._set_offset_value)
         self.pattern_offset_slider.valueChanged.connect(self.patternOffsetPercentChanged)
+        self.normalize_patterns_checkbox.setToolTip("Normalize observed XRD patterns to Imax = 100 for display and phase search.")
+        self.normalize_patterns_checkbox.toggled.connect(self.normalizePatternsChanged)
 
         layout.addWidget(self.smooth_button)
         layout.addWidget(self.background_button)
@@ -82,6 +86,7 @@ class FinderActionBar(QWidget):
         layout.addWidget(QLabel("Offset"))
         layout.addWidget(self.pattern_offset_slider)
         layout.addWidget(self.pattern_offset_value)
+        layout.addWidget(self.normalize_patterns_checkbox)
         layout.addStretch(1)
 
         self.search_input.setPlaceholderText("Formula / elements / phase name")

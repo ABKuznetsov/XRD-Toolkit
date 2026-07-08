@@ -108,6 +108,7 @@ class CachedProfileCalculator:
             x_grid,
             fwhm=context.fwhm,
             wavelength=context.wavelength,
+            include_kalpha2=True,
         )
         profile = np.asarray(profile, dtype=float)
         profile.setflags(write=False)

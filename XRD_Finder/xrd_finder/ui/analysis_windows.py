@@ -39,6 +39,7 @@ from xrd_finder.services.calculated_pattern_service import (
     CU_KA1_WAVELENGTH,
     CalculatedPatternService,
     HKLPeak,
+    calculated_profile_from_peaks,
 )
 from xrd_finder.services.candidate_search_service import (
     CandidateSearchService,
@@ -569,6 +570,7 @@ class PhaseFinderWindow(
         self._candidate_probability_cache: dict[tuple[object, ...], float] = {}
         self.show_all_selected_patterns = False
         self.pattern_stack_offset_percent = 10
+        self.normalize_observed_patterns = False
         self.observed_pattern_plot_context: dict[str, dict[str, float]] = {}
         self.match_plot_view_initialized = False
         self._pending_candidate_row = -1
@@ -601,6 +603,7 @@ class PhaseFinderWindow(
         self.finder_action_bar.searchRequested.connect(self._search_pdf2_text)
         self.finder_action_bar.patternDisplayModeChanged.connect(self._set_pattern_display_mode)
         self.finder_action_bar.patternOffsetPercentChanged.connect(self._set_pattern_stack_offset)
+        self.finder_action_bar.normalizePatternsChanged.connect(self._set_pattern_normalization)
         self.finder_action_bar.resetViewRequested.connect(self._reset_match_plot_view)
         self.search_input = self.finder_action_bar.search_input
         self.center_layout.addWidget(self.finder_action_bar)
@@ -1090,6 +1093,7 @@ class PhaseFinderWindow(
         if not observed_records:
             return rows
 
+        gain_context = self._candidate_gain_context()
         scored_rows = []
         for index, row in enumerate(rows):
             scored_row = list(row)
@@ -1100,11 +1104,174 @@ class PhaseFinderWindow(
             )
             if probability > 0:
                 scored_row[5] = f"{probability:.0f}%"
-            scored_rows.append((probability, index, scored_row))
-        if not any(score > 0 for score, _index, _row in scored_rows):
-            return [row for _score, _index, row in scored_rows]
-        scored_rows.sort(key=lambda item: (-item[0], item[1]))
-        return [row for _score, _index, row in scored_rows]
+            gain = self._candidate_row_integral_gain(scored_row, gain_context) if gain_context is not None else 0.0
+            if gain >= 0.05:
+                scored_row[6] = f"{gain:.1f}%" if gain < 10.0 else f"{gain:.0f}%"
+            elif gain > 0:
+                scored_row[6] = "<0.1%"
+            rank_score = gain if gain_context is not None else probability
+            scored_rows.append((rank_score, probability, index, scored_row))
+        if not any(score > 0 for score, _probability, _index, _row in scored_rows):
+            return [row for _score, _probability, _index, row in scored_rows]
+        scored_rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        return [row for _score, _probability, _index, row in scored_rows]
+
+    def _candidate_gain_context(self):
+        if not self.match_candidates:
+            return None
+        observed = self._active_observed_data()
+        if observed is None or not len(observed):
+            return None
+        try:
+            x = np.asarray(observed[:, 0], dtype=float)
+            y = np.asarray(observed[:, 1], dtype=float)
+            background = self._estimate_background(x, y)
+            corrected = np.clip(y - background, 0.0, None)
+            if len(corrected) == 0 or float(np.nanmax(corrected)) <= 0:
+                return None
+            noise_floor = self._gain_noise_floor(corrected)
+            target = np.clip(corrected - noise_floor, 0.0, None)
+            if float(np.nanmax(target)) <= 0:
+                return None
+            fwhm = self._estimate_profile_fwhm(x, corrected)
+            weights = self._fit_weights(target)
+            selected_profiles = []
+            for candidate in self.match_candidates:
+                profile = self._candidate_profile_for_gain(candidate, x, fwhm)
+                if profile is not None:
+                    selected_profiles.append(profile)
+            selected_scales = self._fit_nonnegative_scales(target, selected_profiles, weights)
+            selected_total = self._scaled_profile_sum(selected_profiles, selected_scales, target)
+            before_error = self._weighted_integral_error(target, selected_total, weights)
+            total_area = self._weighted_integral_area(target, weights)
+            if total_area <= 0:
+                return None
+            return {
+                "x": x,
+                "target": target,
+                "weights": weights,
+                "fwhm": fwhm,
+                "selected_profiles": selected_profiles,
+                "selected_total": selected_total,
+                "before_error": before_error,
+                "total_area": total_area,
+            }
+        except Exception:
+            return None
+
+    def _candidate_row_integral_gain(self, row: list[str], context) -> float:
+        if context is None:
+            return 0.0
+        candidate = {
+            "Source": row[0] if len(row) > 0 else "",
+            "Entry": row[1] if len(row) > 1 else "",
+            "Formula": row[2] if len(row) > 2 else "",
+            "Phase": row[3] if len(row) > 3 else "",
+        }
+        peaks = self._candidate_cached_json_peaks(candidate)
+        if not peaks:
+            return 0.0
+        profile = self._profile_from_gain_peaks(peaks, context["x"], context["fwhm"])
+        if profile is None or float(np.nanmax(profile)) <= 0:
+            return 0.0
+        x = np.asarray(context["x"], dtype=float)
+        target = np.asarray(context["target"], dtype=float)
+        weights = np.asarray(context["weights"], dtype=float)
+        residual = np.clip(target - np.asarray(context["selected_total"], dtype=float), 0.0, None)
+        if float(np.nanmax(residual)) <= 0:
+            return 0.0
+        peak_mask = self._candidate_gain_peak_mask(peaks, x, context["fwhm"])
+        if not np.any(peak_mask):
+            return 0.0
+        local_weights = weights * peak_mask.astype(float)
+        denominator = float(np.trapz(local_weights * profile * profile, dx=1.0))
+        if denominator <= 0:
+            return 0.0
+        scale = float(np.trapz(local_weights * profile * residual, dx=1.0) / denominator)
+        if scale <= 1e-8:
+            return 0.0
+        candidate_area = np.asarray(profile, dtype=float) * scale
+        local_residual = residual * peak_mask
+        local_candidate = candidate_area * peak_mask
+        explained = float(np.trapz(weights * np.minimum(local_candidate, local_residual), dx=1.0))
+        local_excess = float(np.trapz(weights * np.clip(local_candidate - local_residual, 0.0, None), dx=1.0))
+        outside_excess = float(np.trapz(weights * np.clip(candidate_area * (~peak_mask), 0.0, None), dx=1.0))
+        improvement = max(0.0, explained - 0.20 * local_excess - 0.08 * outside_excess)
+        residual_area = max(float(np.trapz(weights * residual, dx=1.0)), context["total_area"] * 0.02)
+        return float(np.clip(100.0 * improvement / residual_area, 0.0, 100.0))
+
+    def _candidate_profile_for_gain(self, candidate: dict[str, str], x: np.ndarray, fwhm: float) -> np.ndarray | None:
+        peaks = self._candidate_cached_json_peaks(candidate)
+        if not peaks:
+            return None
+        return self._profile_from_gain_peaks(peaks, x, fwhm)
+
+    def _profile_from_gain_peaks(self, peaks: list[HKLPeak], x: np.ndarray, fwhm: float) -> np.ndarray | None:
+        try:
+            _grid, profile = calculated_profile_from_peaks(
+                peaks,
+                x,
+                fwhm=fwhm,
+                wavelength=self._active_wavelength(),
+                include_kalpha2=True,
+            )
+        except Exception:
+            return None
+        profile = np.asarray(profile, dtype=float)
+        if len(profile) != len(x) or float(np.nanmax(profile)) <= 0:
+            return None
+        return profile
+
+    def _candidate_gain_peak_mask(self, peaks: list[HKLPeak], x: np.ndarray, fwhm: float) -> np.ndarray:
+        if len(x) == 0:
+            return np.zeros(0, dtype=bool)
+        strong_peaks = [peak for peak in peaks if float(getattr(peak, "intensity", 0.0)) >= 3.0]
+        strong_peaks = sorted(strong_peaks, key=lambda peak: float(getattr(peak, "intensity", 0.0)), reverse=True)[:45]
+        half_width = max(0.18, float(fwhm) * 2.6)
+        mask = np.zeros(len(x), dtype=bool)
+        for peak in strong_peaks:
+            center = float(getattr(peak, "two_theta", 0.0))
+            mask |= np.abs(x - center) <= half_width
+        return mask
+
+    def _gain_noise_floor(self, corrected: np.ndarray) -> float:
+        y = np.asarray(corrected, dtype=float)
+        finite = y[np.isfinite(y)]
+        if not len(finite):
+            return 0.0
+        median = float(np.nanmedian(finite))
+        mad = float(np.nanmedian(np.abs(finite - median)))
+        robust_sigma = 1.4826 * mad
+        return max(median + 2.5 * robust_sigma, float(np.nanpercentile(finite, 20)))
+
+    def _fit_nonnegative_scales(self, target: np.ndarray, profiles: list[np.ndarray], weights: np.ndarray) -> list[float]:
+        usable = [np.asarray(profile, dtype=float) for profile in profiles if len(profile) == len(target) and float(np.nanmax(profile)) > 0]
+        if not usable:
+            return []
+        matrix = np.vstack(usable).T
+        sqrt_weights = np.sqrt(np.clip(np.asarray(weights, dtype=float), 0.0, None))
+        try:
+            scales, *_ = np.linalg.lstsq(matrix * sqrt_weights[:, None], target * sqrt_weights, rcond=None)
+        except Exception:
+            return [0.0] * len(usable)
+        return [max(0.0, float(scale)) for scale in scales]
+
+    def _scaled_profile_sum(self, profiles: list[np.ndarray], scales: list[float], target: np.ndarray) -> np.ndarray:
+        if not profiles or not scales:
+            return np.zeros_like(target, dtype=float)
+        total = np.zeros_like(target, dtype=float)
+        for profile, scale in zip(profiles, scales, strict=False):
+            total += np.asarray(profile, dtype=float) * float(scale)
+        return total
+
+    def _weighted_integral_area(self, target: np.ndarray, weights: np.ndarray) -> float:
+        weighted = np.asarray(target, dtype=float) * np.clip(np.asarray(weights, dtype=float), 0.0, None)
+        return float(np.trapz(weighted, dx=1.0))
+
+    def _weighted_integral_error(self, target: np.ndarray, calculated: np.ndarray, weights: np.ndarray) -> float:
+        residual = np.abs(np.asarray(target, dtype=float) - np.asarray(calculated, dtype=float))
+        weighted = residual * np.clip(np.asarray(weights, dtype=float), 0.0, None)
+        return float(np.trapz(weighted, dx=1.0))
 
     def _candidate_row_peak_probability_from_records(
         self,

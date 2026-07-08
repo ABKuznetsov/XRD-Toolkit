@@ -4,7 +4,7 @@ import numpy as np
 import pyqtgraph as pg
 
 from xrd_finder.core.pattern import Pattern
-from xrd_finder.ui.observed_patterns import apply_pattern_offsets, load_observed_patterns, observed_pattern_data, processed_pattern_data
+from xrd_finder.ui.observed_patterns import apply_pattern_offsets, load_observed_patterns, normalize_intensity, observed_pattern_data, processed_pattern_data
 from xrd_finder.ui.pattern_plot_helpers import (
     calculate_profile_for_structure,
     ensure_right_legend,
@@ -26,8 +26,19 @@ class PhaseFinderObservedPatternActionsMixin:
             self._refresh_observed_pattern_plot()
             self._rerun_active_calculation()
 
+    def _set_pattern_normalization(self, enabled: bool) -> None:
+        self.normalize_observed_patterns = bool(enabled)
+        self._clear_probability_caches()
+        self._refresh_observed_pattern_plot()
+        self._rerun_active_calculation()
+
+    def _normalized_observed_data(self, data: np.ndarray | None) -> np.ndarray | None:
+        if data is None or not self.normalize_observed_patterns:
+            return data
+        return normalize_intensity(data)
+
     def _pattern_processed_observed_data(self, pattern: Pattern | None) -> np.ndarray | None:
-        return processed_pattern_data(pattern)
+        return self._normalized_observed_data(processed_pattern_data(pattern))
 
     def _active_processed_observed_data(self) -> np.ndarray | None:
         return self._pattern_processed_observed_data(self._active_pattern())
@@ -37,7 +48,7 @@ class PhaseFinderObservedPatternActionsMixin:
         return bool(pattern is not None and pattern.processed_background_removed)
 
     def _active_observed_data(self):
-        return observed_pattern_data(self._active_pattern())
+        return self._normalized_observed_data(observed_pattern_data(self._active_pattern()))
 
     def _refresh_observed_pattern_plot(self) -> None:
         self._draw_observed_patterns()
@@ -66,7 +77,7 @@ class PhaseFinderObservedPatternActionsMixin:
         y_values = []
         color_index = 0
         loaded_patterns = apply_pattern_offsets(
-            load_observed_patterns(patterns, active_override),
+            load_observed_patterns(patterns, active_override, normalize=self.normalize_observed_patterns),
             self.show_all_selected_patterns,
             self.pattern_stack_offset_percent,
         )

@@ -1,37 +1,31 @@
 {
   "app_id": "xrd_finder",
   "name": "XRD Phase Finder",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "channel": "stable",
   "minimum_windows": "10.0",
   "published_at": "2026-07-08",
-  "release_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/tag/v1.1.0",
-  "release_notes_url": "https://raw.githubusercontent.com/ABKuznetsov/XRD_Analysis_Toolkit/main/XRD_Finder/RELEASE_NOTES_1.1.0.md",
+  "release_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/tag/v1.1.1",
+  "release_notes_url": "https://raw.githubusercontent.com/ABKuznetsov/XRD_Analysis_Toolkit/main/XRD_Finder/RELEASE_NOTES_1.1.1.md",
   "assets": [
     {
-      "name": "XRD_Phase_Finder_Setup_1.1.0.exe",
+      "name": "XRD_Phase_Finder_Setup_1.1.1.exe",
       "type": "installer",
       "platform": "windows-x64",
-      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_Setup_1.1.0.exe",
-      "sha256": "c4ea94cb01102df81da25eb2437798f98cbdd88c85e38912a17173f363ac6a9d",
-      "size_bytes": 5853656
+      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.1/XRD_Phase_Finder_Setup_1.1.1.exe"
     },
     {
-      "name": "XRD_Phase_Finder_macOS_1.1.0.zip",
+      "name": "XRD_Phase_Finder_macOS_1.1.1.zip",
       "type": "installer-archive",
       "platform": "macos",
-      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_macOS_1.1.0.zip",
-      "sha256": "6c53a789f6b5a621752426b9b369862f84804c502a9e6e1a1df325055f8ba17e",
-      "size_bytes": 3748791
+      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.1/XRD_Phase_Finder_macOS_1.1.1.zip"
     }
   ],
   "summary": [
-    "Refactor the Phase Finder workspace into smaller action, renderer and state modules.",
-    "Add pybaselines-backed background estimation with conservative fallbacks.",
-    "Improve project state persistence for Finder workflows.",
-    "Add macOS setup/update helpers and release archive tooling.",
-    "Show a first-start/update notice while local caches and database data are prepared."
+    "Add the foundation for separate Match (%) and experimental Gain (%) candidate metrics.",
+    "Keep Match (%), Gain (%) and I/Ic as separate candidate-table values for future tuning.",
+    "Use the shared robust XRD background estimator inside the Finder calculation path.",
+    "Build calculated Finder profiles explicitly with Cu Kα1/Kα2 doublet lines."
   ],
-  "installer_sha256": "c4ea94cb01102df81da25eb2437798f98cbdd88c85e38912a17173f363ac6a9d",
-  "installer_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_Setup_1.1.0.exe"
+  "installer_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.1/XRD_Phase_Finder_Setup_1.1.1.exe"
 }

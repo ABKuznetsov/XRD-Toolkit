@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.1 - 2026-07-08
+
+### Added
+
+- Added the foundation for separate `Match (%)` and experimental `Gain (%)` candidate metrics for future tuning.
+- Added a `Normalize` checkbox for observed XRD patterns (`Imax = 100`) used by display and phase search without modifying source data.
+
+### Changed
+
+- Candidate tables now keep standalone `Match (%)`, experimental mixture `Gain (%)` and reference `I/Ic` values separate.
+- Finder profile calculations explicitly include Cu Kα1/Kα2 doublet contributions.
+- Finder background estimation now uses the shared robust XRD background estimator instead of a simple percentile filter.
+
 ## 1.0.2 - 2026-07-07
 
 ### Added

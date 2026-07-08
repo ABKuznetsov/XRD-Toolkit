@@ -18,7 +18,8 @@ class CandidateTableWidget(QTableWidget):
     contextRequested = Signal(QPoint)
 
     MATCH_HEADER = "Match (%)"
-    HEADERS = ["Source", "Entry", "Formula", "Phase", "Sp. gr.", MATCH_HEADER, "I/Ic"]
+    GAIN_HEADER = "Gain (%)"
+    HEADERS = ["Source", "Entry", "Formula", "Phase", "Sp. gr.", MATCH_HEADER, GAIN_HEADER, "I/Ic"]
 
     def __init__(self, rows: list[list[str]], parent=None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
@@ -131,12 +132,14 @@ class CandidateTableWidget(QTableWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.setColumnWidth(1, min(max(self.columnWidth(1), 90), 170))
         self.setColumnWidth(2, min(max(self.columnWidth(2), 150), 260))
         self.setColumnWidth(4, 92)
         self.setColumnWidth(5, 82)
-        self.setColumnWidth(6, 72)
+        self.setColumnWidth(6, 82)
+        self.setColumnWidth(7, 72)
 
 
 class SelectedCandidatesTableWidget(QTableWidget):

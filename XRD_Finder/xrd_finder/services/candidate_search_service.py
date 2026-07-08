@@ -618,15 +618,18 @@ def normalize_candidate_row(row: list[str]) -> list[str]:
             row[4],
             "",
             row[8],
+            "",
             row[9],
         ]
-    if len(row) >= 7:
-        return row[:7]
+    if len(row) >= 8:
+        return row[:8]
+    if len(row) == 7:
+        return [row[0], row[1], row[2], row[3], row[4], row[5], "", row[6]]
     if len(row) == 6:
-        return [row[0], row[1], row[2], row[3], "", row[4], row[5]]
+        return [row[0], row[1], row[2], row[3], "", row[4], "", row[5]]
     if len(row) >= 5:
-        return ["", "", "", row[4], "", "", ""]
-    padded = list(row) + [""] * 7
-    return padded[:7]
+        return ["", "", "", row[4], "", "", "", ""]
+    padded = list(row) + [""] * 8
+    return padded[:8]
 
 

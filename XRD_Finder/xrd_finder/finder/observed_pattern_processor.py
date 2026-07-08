@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import percentile_filter
 from scipy.signal import find_peaks, peak_widths, savgol_filter
 
 from xrd_finder.finder.models import FinderInput, ObservedPeak
 from xrd_finder.io.xy_loader import load_xy
+from xrd_finder.services.preprocessing_service import estimate_background as estimate_xrd_background
 
 
 @dataclass(slots=True)
@@ -25,7 +25,7 @@ class ObservedPatternProcessor:
     def prepare(self, finder_input: FinderInput) -> ObservedPatternData:
         x_grid, observed_y = self.observed_arrays(finder_input)
         observed_y = self.smooth_y(observed_y, finder_input.smoothing_window)
-        background = self.estimate_background(observed_y) if finder_input.subtract_background else np.zeros_like(observed_y)
+        background = self.estimate_background(x_grid, observed_y) if finder_input.subtract_background else np.zeros_like(observed_y)
         target_y = np.clip(observed_y - background, 0.0, None)
         fwhm = finder_input.fwhm or self.estimate_fwhm(x_grid, target_y)
         peaks = self.observed_peaks(x_grid, target_y, fwhm)
@@ -64,11 +64,13 @@ class ObservedPatternProcessor:
             kernel = np.ones(window, dtype=float) / float(window)
             return np.convolve(y, kernel, mode="same")
 
-    def estimate_background(self, y: np.ndarray) -> np.ndarray:
+    def estimate_background(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         if len(y) < 5:
             return np.zeros_like(y)
-        window = max(31, (len(y) // 80) | 1)
-        return np.asarray(percentile_filter(y, percentile=15, size=window, mode="nearest"), dtype=float)
+        try:
+            return np.asarray(estimate_xrd_background(x, y, method="auto"), dtype=float)
+        except Exception:
+            return np.full_like(y, float(np.nanpercentile(y, 15)))
 
     def estimate_fwhm(self, x: np.ndarray, y: np.ndarray) -> float:
         if len(x) < 5 or float(np.nanmax(y)) <= 0:
