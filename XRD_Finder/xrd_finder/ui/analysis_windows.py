@@ -145,6 +145,8 @@ class AnalysisWindow(QDialog):
         self._register_drop_target(self.tree)
         self.tree.set_project(project)
         self.tree.object_open_requested.connect(self._open_project_object)
+        self.tree.object_rename_requested.connect(self._rename_project_object)
+        self.tree.object_delete_requested.connect(self._delete_project_object)
         self.tree.itemSelectionChanged.connect(self._on_project_tree_selection_changed)
         self.tree.pattern_selection_changed.connect(lambda _ids: self._on_project_tree_selection_changed())
         self.tree.phase_selection_changed.connect(lambda _ids: self._on_project_tree_selection_changed())
@@ -565,6 +567,10 @@ class PhaseFinderWindow(
         self._candidate_activation_timer.setSingleShot(True)
         self._candidate_activation_timer.setInterval(120)
         self._candidate_activation_timer.timeout.connect(self._activate_pending_candidate_row)
+        self._candidate_rank_token = 0
+        self._candidate_rank_rows: list[list[str]] = []
+        self._candidate_rank_scores: dict[int, float] = {}
+        self._candidate_rank_index = 0
 
     def _create_action_bar(self) -> None:
         self.finder_action_bar = FinderActionBar()
@@ -1169,18 +1175,17 @@ class PhaseFinderWindow(
         try:
             cif_path = self._candidate_cif_path(candidate)
             _phase, structure = create_phase_from_cif(cif_path)
+            if not getattr(structure, "formula", "") and candidate.get("Formula"):
+                structure.formula = candidate["Formula"]
             return self._estimate_structure_corundum_iic(structure, x_grid=x_grid)
         except Exception:
             return 0.0
 
     def _estimate_structure_corundum_iic(self, structure, x_grid: np.ndarray | None = None) -> float:
         wavelength = float(getattr(structure, "wavelength", None) or CU_KA1_WAVELENGTH)
-        if x_grid is not None and len(x_grid):
-            two_theta_min = float(np.nanmin(x_grid))
-            two_theta_max = float(np.nanmax(x_grid))
-        else:
-            two_theta_min = 5.0
-            two_theta_max = 120.0
+        # Keep I/Ic stable: it is a reference-pattern property, not a current zoom/window property.
+        two_theta_min = 5.0
+        two_theta_max = 120.0
         try:
             sample_peaks = self.calculated_pattern_service.calculate_sticks(
                 structure,
@@ -1192,8 +1197,8 @@ class PhaseFinderWindow(
             corundum_peaks = self._corundum_peaks(wavelength, two_theta_min, two_theta_max)
         except Exception:
             return 0.0
-        sample_total = self._raw_peak_total(sample_peaks)
-        corundum_total = self._raw_peak_total(corundum_peaks)
+        sample_total = self._raw_peak_reference_intensity(sample_peaks)
+        corundum_total = self._raw_peak_reference_intensity(corundum_peaks)
         if sample_total <= 0 or corundum_total <= 0:
             return 0.0
         correction = self._corundum_absorption_correction(getattr(structure, "formula", ""))
@@ -1270,10 +1275,12 @@ class PhaseFinderWindow(
         ]
         return structure
 
-    def _raw_peak_total(self, peaks) -> float:
-        return float(
-            sum(max(float(getattr(peak, "raw_intensity", 0.0) or getattr(peak, "intensity", 0.0)), 0.0) for peak in peaks)
-        )
+    def _raw_peak_reference_intensity(self, peaks) -> float:
+        values = [
+            max(float(getattr(peak, "raw_intensity", 0.0) or getattr(peak, "intensity", 0.0)), 0.0)
+            for peak in peaks
+        ]
+        return float(max(values, default=0.0))
 
     def _calculate_candidate_overlay(self, candidate: dict[str, str], show_errors: bool) -> None:
         entry_id = candidate.get("Entry", "")
@@ -1510,11 +1517,64 @@ class PhaseFinderWindow(
             self._search_pdf2_text()
 
     def _set_candidate_rows(self, rows: list[list[str]]) -> None:
+        self._candidate_rank_token += 1
         rows = [normalize_candidate_row(row) for row in rows]
-        rows = self._rank_candidate_rows_by_peak_probability(rows)
         self.candidate_table.set_rows(rows, normalize_candidate_row)
         if rows:
             self._update_compound_card(self._candidate_row_values(0))
+        if self._rank_by_peak_probability_enabled() and rows:
+            self._start_candidate_probability_ranking(rows)
+
+    def _start_candidate_probability_ranking(self, rows: list[list[str]]) -> None:
+        probability_data = self._probability_observed_data()
+        if probability_data is None:
+            return
+        _observed_x, _corrected, observed_records = probability_data
+        if not observed_records:
+            return
+        self._candidate_rank_token += 1
+        token = self._candidate_rank_token
+        self._candidate_rank_rows = [list(row) for row in rows]
+        self._candidate_rank_scores = {}
+        self._candidate_rank_index = 0
+        QTimer.singleShot(60, lambda token=token: self._rank_candidate_rows_step(token))
+
+    def _rank_candidate_rows_step(self, token: int) -> None:
+        if token != self._candidate_rank_token or not self._candidate_rank_rows:
+            return
+        probability_data = self._probability_observed_data()
+        if probability_data is None:
+            return
+        observed_x, corrected, _observed_records = probability_data
+        max_ranked_rows = min(35, len(self._candidate_rank_rows))
+        batch_size = 3
+        stop = min(self._candidate_rank_index + batch_size, max_ranked_rows)
+        for row_index in range(self._candidate_rank_index, stop):
+            row = self._candidate_rank_rows[row_index]
+            probability = self._candidate_row_peak_probability(row, observed_x, corrected)
+            self._candidate_rank_scores[row_index] = probability
+            if probability > 0:
+                row[5] = f"{probability:.0f}%"
+                self.candidate_table.set_probability(row_index, row[5])
+        self._candidate_rank_index = stop
+        if self._candidate_rank_index < max_ranked_rows:
+            QTimer.singleShot(20, lambda token=token: self._rank_candidate_rows_step(token))
+            return
+        if not any(score > 0 for score in self._candidate_rank_scores.values()):
+            return
+        indexed_rows = []
+        for index, row in enumerate(self._candidate_rank_rows):
+            indexed_rows.append((self._candidate_rank_scores.get(index, 0.0), index, row))
+        indexed_rows.sort(key=lambda item: (-item[0], item[1]))
+        current = self.candidate_table.selected_row_values() or {}
+        current_key = (current.get("Source", ""), current.get("Entry", ""), current.get("Phase", ""))
+        sorted_rows = [row for _score, _index, row in indexed_rows]
+        self.candidate_table.set_rows(sorted_rows, normalize_candidate_row)
+        for row_index in range(self.candidate_table.rowCount()):
+            values = self._candidate_row_values(row_index)
+            if (values.get("Source", ""), values.get("Entry", ""), values.get("Phase", "")) == current_key:
+                self.candidate_table.selectRow(row_index)
+                break
 
     def _format_first_peak_two_theta(self, candidate) -> str:
         return ""

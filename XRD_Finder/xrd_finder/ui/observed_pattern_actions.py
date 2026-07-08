@@ -5,7 +5,13 @@ import pyqtgraph as pg
 
 from xrd_finder.core.pattern import Pattern
 from xrd_finder.ui.observed_patterns import apply_pattern_offsets, load_observed_patterns, observed_pattern_data, processed_pattern_data
-from xrd_finder.ui.pattern_plot_helpers import ensure_right_legend
+from xrd_finder.ui.pattern_plot_helpers import (
+    calculate_profile_for_structure,
+    ensure_right_legend,
+    plot_hkl_sticks,
+    plot_profile,
+    scale_profile_to_reference,
+)
 
 
 class PhaseFinderObservedPatternActionsMixin:
@@ -89,8 +95,62 @@ class PhaseFinderObservedPatternActionsMixin:
             x_values.append(item.x)
             y_values.append(y)
 
+        self._draw_checked_phase_profiles(loaded_patterns)
+
         if x_values and y_values and not self.match_plot_view_initialized:
             self._reset_match_plot_view()
+
+
+    def _draw_checked_phase_profiles(self, loaded_patterns) -> None:
+        for layer in ["calculated_profile", "hkl"]:
+            for item in self.plot_layers.get(layer, []):
+                self.match_plot.removeItem(item)
+            self.plot_layers[layer] = []
+        checked = set(self.tree.checked_phase_ids())
+        if not checked:
+            return
+        phases = [phase for phase in self.project.phases if phase.id in checked]
+        if not phases:
+            return
+        structures = {structure.id: structure for structure in self.project.structures}
+        if loaded_patterns:
+            x_grid = loaded_patterns[0].x
+            reference_max = max((float(np.nanmax(item.y)) for item in loaded_patterns if len(item.y)), default=100.0)
+            y_offset = max((float(np.nanmax(item.plotted_y)) for item in loaded_patterns if len(item.plotted_y)), default=0.0)
+            y_offset += max(reference_max * 0.12, 1.0) if self.show_all_selected_patterns else 0.0
+        else:
+            x_grid = np.linspace(5.0, 120.0, 5000)
+            reference_max = 100.0
+            y_offset = 0.0
+        colors = ["#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa"]
+        for index, phase in enumerate(phases):
+            structure = structures.get(phase.structure_id or "") or next(
+                (item for item in self.project.structures if item.phase_id == phase.id),
+                None,
+            )
+            if structure is None:
+                continue
+            try:
+                structure.wavelength = self._active_wavelength()
+                x, y, peaks = calculate_profile_for_structure(
+                    self.calculated_pattern_service,
+                    structure,
+                    x_grid,
+                    fwhm=0.18,
+                )
+            except Exception:
+                continue
+            y = scale_profile_to_reference(y, reference_max)
+            if self.show_all_selected_patterns:
+                y = y + y_offset
+                y_offset += max(float(np.nanmax(y) - np.nanmin(y)), reference_max, 1.0) * (self.pattern_stack_offset_percent / 100.0)
+            color = colors[index % len(colors)]
+            item = plot_profile(self.match_plot, x, y, color, f"calc: {phase.name}", width=1.35)
+            self.plot_layers["calculated_profile"].append(item)
+            if self.show_hkl_labels:
+                baseline = float(np.nanmin(y))
+                top = baseline + max(reference_max * 0.18, 1.0)
+                self.plot_layers["hkl"].extend(plot_hkl_sticks(self.match_plot, peaks, color, baseline, top, label=f"hkl: {phase.name}"))
 
     def _plot_view_range(self) -> tuple[tuple[float, float], tuple[float, float]]:
         view_range = self.match_plot.plotItem.vb.viewRange()

@@ -34,6 +34,8 @@ class MainWindow(QMainWindow):
         self.context_viewer = ContextViewer()
         self.right_panel = RightPanel()
         self.project_tree.object_open_requested.connect(self._open_project_object)
+        self.project_tree.object_rename_requested.connect(self._rename_project_object)
+        self.project_tree.object_delete_requested.connect(self._delete_project_object)
         self.project_tree.pattern_selection_changed.connect(lambda _ids: self._apply_pattern_display())
         self.project_tree.phase_selection_changed.connect(lambda _ids: self._apply_pattern_display())
         self.right_panel.pattern_display_changed.connect(self._apply_pattern_display)

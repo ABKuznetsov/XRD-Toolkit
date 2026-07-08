@@ -17,11 +17,11 @@ from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.project import Project
 from xrd_finder.io.xy_loader import load_xy
 from xrd_finder.services.calculated_pattern_service import CalculatedPatternService
+from xrd_finder.services.preprocessing_service import estimate_background
 from xrd_finder.ui.pattern_plot_helpers import (
     add_right_side_labels,
     calculate_profile_for_structure,
     ensure_right_legend,
-    estimate_background,
     estimate_profile_fwhm,
     plot_hkl_sticks,
     plot_profile,

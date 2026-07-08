@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtWidgets import QInputDialog, QMessageBox
+
 from xrd_finder.io.cif_loader import create_phase_from_cif
 
 
@@ -67,6 +69,92 @@ class PhaseFinderProjectTreeActionsMixin:
         except Exception:
             return None
 
+
+    def _rename_project_object(self, object_type: str, object_id: str) -> None:
+        current_name = ""
+        if object_type == "project" and object_id == self.project.id:
+            current_name = self.project.name
+        elif object_type == "pattern":
+            current = next((pattern for pattern in self.project.patterns if pattern.id == object_id), None)
+            current_name = current.name if current is not None else ""
+        elif object_type == "phase":
+            current = next((phase for phase in self.project.phases if phase.id == object_id), None)
+            current_name = current.name if current is not None else ""
+        if not current_name:
+            return
+        new_name, accepted = QInputDialog.getText(self, "Rename", "Name:", text=current_name)
+        if not accepted:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == current_name:
+            return
+        if object_type == "project" and object_id == self.project.id:
+            self.project.name = new_name
+            self.setWindowTitle(f"{self._base_title} - {self.project.name}")
+        elif object_type == "pattern":
+            current = next((pattern for pattern in self.project.patterns if pattern.id == object_id), None)
+            if current is None:
+                return
+            current.name = new_name
+        elif object_type == "phase":
+            current = next((phase for phase in self.project.phases if phase.id == object_id), None)
+            if current is None:
+                return
+            current.name = new_name
+            structure = self._structure_for_phase(object_id)
+            if structure is not None:
+                structure.name = new_name
+        self.project.touch()
+        self.tree.set_project(self.project)
+        self.tree.select_object(object_type, object_id)
+        self._refresh_project_phase_candidates()
+        self._refresh_observed_pattern_plot()
+
+    def _delete_project_object(self, object_type: str, object_id: str) -> None:
+        if object_type not in {"pattern", "phase"}:
+            return
+        if object_type == "pattern":
+            current = next((pattern for pattern in self.project.patterns if pattern.id == object_id), None)
+            label = "XRD pattern"
+        else:
+            current = next((phase for phase in self.project.phases if phase.id == object_id), None)
+            label = "CIF phase"
+        if current is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            f"Delete {label}",
+            f"Delete {label} '{current.name}' from this project?\n\nThis removes it from the project tree and cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if object_type == "pattern":
+            self.project.patterns = [pattern for pattern in self.project.patterns if pattern.id != object_id]
+        else:
+            phase = current
+            structure_id = phase.structure_id
+            self.project.phases = [item for item in self.project.phases if item.id != object_id]
+            self.project.structures = [
+                structure
+                for structure in self.project.structures
+                if structure.phase_id != object_id and (not structure_id or structure.id != structure_id)
+            ]
+            self.match_candidates = [
+                candidate
+                for candidate in self.match_candidates
+                if not (self._candidate_source(candidate) == "USER" and candidate.get("Entry") in {object_id, phase.id})
+            ]
+        self.project.touch()
+        self.tree.set_project(self.project)
+        self._refresh_project_phase_candidates()
+        self._refresh_observed_pattern_plot()
+        if self.match_candidates:
+            self._recalculate_match_profile()
+        else:
+            self._update_match_table()
+
     def _refresh_project_phase_candidates(self) -> None:
         if not hasattr(self, "candidate_table"):
             return
@@ -85,12 +173,7 @@ class PhaseFinderProjectTreeActionsMixin:
         view_range = self._plot_view_range() if self.show_all_selected_patterns else None
         try:
             self._refresh_observed_pattern_plot()
-            tree_structure = self._current_tree_phase_structure()
-            if tree_structure is not None:
-                self.active_overlay_entry_id = None
-                self._clear_preview_overlay()
-                self._calculate_structure_overlay(tree_structure, preview=False)
-            elif self.match_candidates:
+            if self.match_candidates:
                 self._recalculate_match_profile()
             elif self.active_overlay_entry_id:
                 candidate = self._selected_candidate_row()
