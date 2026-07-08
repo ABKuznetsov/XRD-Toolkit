@@ -268,16 +268,17 @@ The **Databases** tab controls which data sources participate in phase search. T
 Open or publicly accessible sources:
 
 - User phase library from imported CIF files
-- COD online search
-- COD local folder/archive indexed by the user
-- RRUFF measured powder-pattern data
-- Materials Project search with the user's own API key
-- AFLOW and OQMD structure services when enabled in the application workflow
+- COD online search ([official site](https://www.crystallography.net/cod/))
+- COD local folder/archive indexed by the user ([official site](https://www.crystallography.net/cod/))
+- RRUFF measured powder-pattern data ([official site](https://rruff.info/))
+- Materials Project search with the user's own API key ([official site](https://materialsproject.org/))
+- AFLOW structure services when enabled in the application workflow ([official site](https://aflow.org/))
+- OQMD structure services when enabled in the application workflow ([official site](https://oqmd.org/))
 
 Restricted or license-controlled sources, available only when the user has the right to use them:
 
-- PDF-2 reference-card data from a local user-provided installation or folder
-- CCDC/CSD data through the user's own CCDC Python API installation and valid license/access rights
+- PDF-2 reference-card data from a local user-provided installation or folder ([ICDD](https://www.icdd.com/pdf-2/))
+- CCDC/CSD data through the user's own CCDC Python API installation and valid license/access rights ([official site](https://www.ccdc.cam.ac.uk/solutions/software/csd/))
 - other local commercial, institutional or private databases supplied by the user
 
 Large databases are never bundled with the application and are not downloaded automatically. Use the controls in **Databases** to download, index, update or clear local data explicitly.
