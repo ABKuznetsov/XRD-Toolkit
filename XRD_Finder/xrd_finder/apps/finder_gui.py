@@ -36,6 +36,10 @@ def main() -> int:
     args = parser.parse_args()
 
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("XRD Phase Finder")
+    app.setApplicationDisplayName("XRD Phase Finder")
+    app.setOrganizationName("XRD Phase Finder")
+    app.setOrganizationDomain("xrdphasefinder.local")
     icon_path = Path(__file__).resolve().parents[2] / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))

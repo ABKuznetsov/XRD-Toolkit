@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QGridLayout,
     QHeaderView,
@@ -52,15 +53,19 @@ class CompoundCardWidget(QWidget):
         self._set_table_rows(self.diffraction_table, data.get("_DiffractionRows"))
 
     def _build_ui(self) -> None:
+        colors = self._theme_colors()
+        self.setStyleSheet(f"CompoundCardWidget {{ background: {colors['bg']}; color: {colors['text']}; }}")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet(f"QScrollArea {{ background: {colors['bg']}; border: 0; }}")
         outer.addWidget(scroll)
 
         content = QWidget()
+        content.setStyleSheet(f"background: {colors['bg']}; color: {colors['text']};")
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -99,7 +104,9 @@ class CompoundCardWidget(QWidget):
         self.labels["Links"].setWordWrap(True)
         self.labels["Links"].setOpenExternalLinks(True)
         self.labels["Links"].setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.labels["Links"].setStyleSheet("color: #8ab4f8; padding: 2px 4px;")
+        self.labels["Links"].setStyleSheet(
+            f"color: {colors['link']}; padding: 2px 4px; background: {colors['bg']};"
+        )
         layout.addWidget(self.labels["Links"])
 
         layout.addWidget(self._section_title("Crystal structure"))
@@ -139,7 +146,8 @@ class CompoundCardWidget(QWidget):
             value = QLabel("-")
             value.setWordWrap(True)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            value.setStyleSheet("color: #f1f3f4; padding: 4px 6px;")
+            colors = self._theme_colors()
+            value.setStyleSheet(f"background: {colors['bg']}; color: {colors['text']}; padding: 4px 6px;")
             self.labels[key] = value
             grid.addWidget(name, row_index, 0)
             grid.addWidget(value, row_index, 1)
@@ -169,11 +177,36 @@ class CompoundCardWidget(QWidget):
         table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         table.horizontalHeader().setStretchLastSection(True)
+        colors = self._theme_colors()
         table.setStyleSheet(
-            "QTableWidget { gridline-color: #2b2f34; }"
+            f"QTableWidget {{ background: {colors['panel']}; alternate-background-color: {colors['alt']}; color: {colors['text']}; gridline-color: {colors['border']}; }}"
+            f"QTableWidget::item {{ color: {colors['text']}; }}"
+            f"QTableWidget::item:selected {{ background: {colors['selected']}; color: {colors['text']}; }}"
             "QHeaderView::section { background: #33383e; color: #f1f3f4; padding: 4px; }"
         )
         return table
+
+    def _theme_colors(self) -> dict[str, str]:
+        dark = self.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        if dark:
+            return {
+                "bg": "#1f2328",
+                "panel": "#252a31",
+                "alt": "#2c323a",
+                "text": "#eef2f7",
+                "border": "#46515d",
+                "selected": "#315f92",
+                "link": "#8ab4f8",
+            }
+        return {
+            "bg": "#f4f6f8",
+            "panel": "#ffffff",
+            "alt": "#f3f6fa",
+            "text": "#111827",
+            "border": "#cbd5e1",
+            "selected": "#dbeafe",
+            "link": "#0b63ce",
+        }
 
     def _set_table_rows(self, table: QTableWidget | None, rows) -> None:
         if table is None:

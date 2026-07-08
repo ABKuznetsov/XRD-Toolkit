@@ -17,7 +17,8 @@ class CandidateTableWidget(QTableWidget):
     addRequested = Signal()
     contextRequested = Signal(QPoint)
 
-    HEADERS = ["Source", "Entry", "Formula", "Phase", "Prob.", "I/Ic*"]
+    MATCH_HEADER = "Match (%)"
+    HEADERS = ["Source", "Entry", "Formula", "Phase", MATCH_HEADER, "I/Ic*"]
 
     def __init__(self, rows: list[list[str]], parent=None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
@@ -96,7 +97,7 @@ class CandidateTableWidget(QTableWidget):
     def set_probability(self, row: int, value: str) -> None:
         if not value or row < 0 or row >= self.rowCount():
             return
-        column = self._column_index("Prob.")
+        column = self._column_index(self.MATCH_HEADER)
         if column < 0:
             return
         item = self.item(row, column)
@@ -135,6 +136,7 @@ class CandidateTableWidget(QTableWidget):
         self.setColumnWidth(3, max(self.columnWidth(3), 260))
         self.setColumnWidth(4, max(self.columnWidth(4), 70))
         self.setColumnWidth(5, max(self.columnWidth(5), 70))
+        header.setStretchLastSection(True)
 
 
 class SelectedCandidatesTableWidget(QTableWidget):
@@ -201,3 +203,4 @@ class SelectedCandidatesTableWidget(QTableWidget):
         self.setColumnWidth(2, max(self.columnWidth(2), 100))
         self.setColumnWidth(3, max(self.columnWidth(3), 90))
         self.setColumnWidth(4, max(self.columnWidth(4), 70))
+        header.setStretchLastSection(True)

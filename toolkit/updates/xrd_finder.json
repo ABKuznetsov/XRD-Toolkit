@@ -1,27 +1,37 @@
 {
-    "app_id":  "xrd_finder",
-    "name":  "XRD Phase Finder",
-    "version":  "1.0.4",
-    "channel":  "stable",
-    "minimum_windows":  "10.0",
-    "published_at":  "2026-07-07",
-    "release_url":  "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/tag/v1.0.4",
-    "release_notes_url":  "https://raw.githubusercontent.com/ABKuznetsov/XRD_Analysis_Toolkit/main/XRD_Finder/RELEASE_NOTES_1.0.4.md",
-    "assets":  [
-                   {
-                       "name":  "XRD_Phase_Finder_Setup_1.0.4.exe",
-                       "sha256":  "15c35fb7f8c1e2aa7da5ebfd27d30d2f37846251b33d7f2119740e2f9afda5f7",
-                       "type":  "installer",
-                       "size_bytes":  5834129,
-                       "platform":  "windows-x64",
-                       "url":  "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.0.4/XRD_Phase_Finder_Setup_1.0.4.exe"
-                   }
-               ],
-    "summary":  [
-                    "Fix Windows 10 startup crashes by pinning PySide6 to a stable Qt runtime.",
-                    "Force existing XRD_Toolkit environments to converge to the packaged requirements during setup.",
-                    "Improve automatic update downloads with PowerShell, BITS, and curl fallbacks.",
-                    "Close the startup preview as soon as the real application window appears.",
-                    "Add right-click project tree actions for opening, renaming, and deleting XRD/CIF entries."
-                ]
+  "app_id": "xrd_finder",
+  "name": "XRD Phase Finder",
+  "version": "1.1.0",
+  "channel": "stable",
+  "minimum_windows": "10.0",
+  "published_at": "2026-07-08",
+  "release_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/tag/v1.1.0",
+  "release_notes_url": "https://raw.githubusercontent.com/ABKuznetsov/XRD_Analysis_Toolkit/main/XRD_Finder/RELEASE_NOTES_1.1.0.md",
+  "assets": [
+    {
+      "name": "XRD_Phase_Finder_Setup_1.1.0.exe",
+      "type": "installer",
+      "platform": "windows-x64",
+      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_Setup_1.1.0.exe",
+      "sha256": "4d1b7c9e6e788fecd0ce7c3b66a529c5b3641fb18a2cb20866454d46e737eeb7",
+      "size_bytes": 5852221
+    },
+    {
+      "name": "XRD_Phase_Finder_macOS_1.1.0.zip",
+      "type": "installer-archive",
+      "platform": "macos",
+      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_macOS_1.1.0.zip",
+      "sha256": "c1a10cc8b97bf2c8035762e8b1346c205e942a2bdfcafa5d2c33ee721b1884dd",
+      "size_bytes": 3748233
+    }
+  ],
+  "summary": [
+    "Refactor the Phase Finder workspace into smaller action, renderer and state modules.",
+    "Add pybaselines-backed background estimation with conservative fallbacks.",
+    "Improve project state persistence for Finder workflows.",
+    "Add macOS setup/update helpers and release archive tooling.",
+    "Show a first-start/update notice while local caches and database data are prepared."
+  ],
+  "installer_sha256": "4d1b7c9e6e788fecd0ce7c3b66a529c5b3641fb18a2cb20866454d46e737eeb7",
+  "installer_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_Setup_1.1.0.exe"
 }

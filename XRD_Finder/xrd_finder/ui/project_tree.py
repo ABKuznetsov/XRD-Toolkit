@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtWidgets import QMenu, QTreeWidget, QTreeWidgetItem
@@ -23,7 +23,7 @@ class ProjectTree(QTreeWidget):
             "Double click an XRD row to show only that pattern.\n"
             "Double click a CIF row to show only that phase marker lane."
         )
-        self.setMinimumWidth(240)
+        self.setMinimumWidth(150)
         self._updating = False
         self._checked_pattern_ids: set[str] = set()
         self._known_pattern_ids: set[str] = set()
@@ -296,5 +296,3 @@ class ProjectTree(QTreeWidget):
             phase_numbers[phase_id] = number
             number += 1
         return {"patterns": pattern_numbers, "phases": phase_numbers}
-
-

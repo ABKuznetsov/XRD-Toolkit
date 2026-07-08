@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$AppId = "xrd_finder"
 )
 
@@ -50,6 +50,59 @@ function New-Label {
     return $label
 }
 
+
+
+
+function Show-StartupNoticeDialog {
+    param([System.Windows.Forms.Form]$Owner)
+
+    $dialog = New-Object System.Windows.Forms.Form
+    $dialog.Text = "XRD Phase Finder"
+    $dialog.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dialog.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $dialog.MaximizeBox = $false
+    $dialog.MinimizeBox = $false
+    $dialog.ShowInTaskbar = $false
+    $dialog.ClientSize = New-Object System.Drawing.Size -ArgumentList 680, 360
+    $dialog.BackColor = [System.Drawing.Color]::White
+
+    $banner = New-Object System.Windows.Forms.Panel
+    $banner.Location = New-Object System.Drawing.Point -ArgumentList 0, 0
+    $banner.Size = New-Object System.Drawing.Size -ArgumentList 680, 92
+    $banner.BackColor = [System.Drawing.Color]::FromArgb(255, 193, 7)
+    $dialog.Controls.Add($banner)
+
+    $mark = New-Label "!" 24 16 58 58 34 "Bold" ([System.Drawing.Color]::FromArgb(120, 53, 15))
+    $mark.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+    $mark.BackColor = [System.Drawing.Color]::FromArgb(255, 236, 179)
+    $banner.Controls.Add($mark)
+
+    $heading = New-Label "First launch after install/update" 96 18 520 30 17 "Bold" ([System.Drawing.Color]::FromArgb(68, 36, 11))
+    $banner.Controls.Add($heading)
+    $subheading = New-Label "Первый запуск после установки или обновления" 96 52 520 22 11 "Bold" ([System.Drawing.Color]::FromArgb(92, 54, 10))
+    $banner.Controls.Add($subheading)
+
+    $ru = New-Label "RU: Сейчас программа может заметно тормозить: она готовит окружение, создает кэши и может загружать данные баз. После первой настройки запуск и поиск будут быстрее. Скорость зависит от компьютера и интернета." 34 118 612 82 11 "Regular" ([System.Drawing.Color]::FromArgb(31, 41, 55))
+    $dialog.Controls.Add($ru)
+
+    $en = New-Label "EN: The app may feel slow for a while: it is preparing the runtime, building caches and may download database data. After the first setup, startup and search should be faster. Speed depends on your computer and internet connection." 34 208 612 82 10.5 "Regular" ([System.Drawing.Color]::FromArgb(55, 65, 81))
+    $dialog.Controls.Add($en)
+
+    $ok = New-Object System.Windows.Forms.Button
+    $ok.Text = "OK"
+    $ok.Size = New-Object System.Drawing.Size -ArgumentList 120, 34
+    $ok.Location = New-Object System.Drawing.Point -ArgumentList 526, 310
+    $ok.BackColor = [System.Drawing.Color]::FromArgb(37, 99, 235)
+    $ok.ForeColor = [System.Drawing.Color]::White
+    $ok.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+    $ok.Font = New-Object System.Drawing.Font -ArgumentList "Segoe UI", 10, ([System.Drawing.FontStyle]::Bold)
+    $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dialog.AcceptButton = $ok
+    $dialog.Controls.Add($ok)
+
+    $dialog.ShowDialog($Owner) | Out-Null
+    $dialog.Dispose()
+}
 
 function New-StateBitmap {
     param([string]$State)
@@ -394,6 +447,8 @@ if (Test-Path -LiteralPath $appManifestPath) {
     } catch {
     }
 }
+$startupNoticePath = Join-Path $finderRoot ("startup_notice_" + $localVersion + ".done")
+$showStartupNotice = -not (Test-Path -LiteralPath $startupNoticePath)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -482,12 +537,14 @@ $script:StepIconBoxes = New-Object System.Collections.Generic.List[System.Window
 Add-StepRow 0 "" "Checking application folders" "User data directory`r`nCache directory" 132
 Add-StepRow 1 "" "Checking local databases" "User library`r`nCache database" 204
 Add-StepRow 2 "" "Checking database connections" "COD`r`nMaterials Project" 276
-Add-StepRow 3 "" "Checking for updates" "Current version: 1.0.2" 348
+Add-StepRow 3 "" "Checking for updates" ("Current version: " + $localVersion) 348
 Add-StepRow 4 "" "Loading settings" "User preferences" 420
-
-
 $script:Form.Show()
 [System.Windows.Forms.Application]::DoEvents()
+if ($showStartupNotice) {
+    Show-StartupNoticeDialog $script:Form
+}
+
 
 try {
     Set-ProgressText 8 "Initializing"
@@ -677,6 +734,10 @@ try {
     $appProcess.BeginErrorReadLine()
     Wait-ApplicationMainWindow $appProcess 120 $startupLog $readyFile | Out-Null
     Write-LauncherLog "Main application window is ready."
+    if ($showStartupNotice) {
+        try { "seen" | Set-Content -LiteralPath $startupNoticePath -Encoding UTF8 } catch {}
+        Write-LauncherLog "Startup notice marked as seen for version $localVersion."
+    }
     Set-Step 4 "OK" "XRD Phase Finder window is ready" "Green"
     Set-ProgressText 100 "Ready"
     [System.Windows.Forms.Application]::DoEvents()
@@ -693,8 +754,6 @@ try {
     $script:Form.Close()
     $script:Form.Dispose()
 }
-
-
 
 
 

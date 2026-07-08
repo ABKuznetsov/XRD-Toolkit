@@ -1,37 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-import math
 import re
-import shutil
-import threading
-from zipfile import ZipFile
-from types import SimpleNamespace
 from PySide6.QtCore import QEvent, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QDragEnterEvent, QDragMoveEvent, QDropEvent, QFont
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QCheckBox,
-    QColorDialog,
-    QComboBox,
     QFileDialog,
-    QFormLayout,
-    QGridLayout,
     QHBoxLayout,
-    QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
-    QMenu,
     QMenuBar,
     QMessageBox,
     QProgressDialog,
-    QPushButton,
     QSplitter,
-    QSizePolicy,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
-    QToolBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -39,56 +23,77 @@ from PySide6.QtWidgets import (
 )
 import numpy as np
 import pyqtgraph as pg
-from scipy.signal import find_peaks, savgol_filter, savgol_filter
+from scipy.signal import find_peaks
 from pathlib import Path
 
 from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.project import Project
+from xrd_finder.core.finder_state import FinderProjectState
 from xrd_finder.core.structure import AtomSite, CellParameters, Structure
-from xrd_finder.finder import FinderCandidateInput, FinderInput, FinderService
+from xrd_finder.finder import FinderInput, FinderService
 from xrd_finder.io.cif_loader import create_phase_from_cif
 from xrd_finder.io.xy_loader import load_xy
-from xrd_finder.io.project_io import save_project_manifest
+from xrd_finder.io.project_io import load_project_manifest, save_project_manifest
 from xrd_finder.services.calculated_pattern_service import (
     CU_KA1_WAVELENGTH,
     CalculatedPatternService,
-    calculated_profile_from_peaks,
-    radiation_lines_from_wavelength,
 )
 from xrd_finder.services.candidate_search_service import (
-    CandidateSearchOptions,
     CandidateSearchService,
     normalize_candidate_row,
 )
 from xrd_finder.services.ccdc_service import CcdcService
-from xrd_finder.services.cod_online_service import CodOnlineService, formula_elements
+from xrd_finder.services.cod_online_service import CodOnlineService
 from xrd_finder.services.computational_database_service import AflowService, OqmdService
 from xrd_finder.services.local_phase_cache import LocalPhaseCache
-from xrd_finder.services.network import open_url
 from xrd_finder.services.match_pdf2_service import MatchPdf2Service
 from xrd_finder.services.materials_project_service import MaterialsProjectService
-from xrd_finder.services.rruff_service import RRUFF_POWDER_XY_PROCESSED_URL, RruffService
-from xrd_finder.ui.preprocessing_dialogs import BackgroundRemovalPanel, SmoothPanel
+from xrd_finder.services.preprocessing_service import estimate_background
+from xrd_finder.services.rruff_service import RruffService
 from xrd_finder.ui.pattern_plot_helpers import (
-    add_hkl_labels,
-    calculate_profile_for_structure,
     ensure_right_legend,
-    estimate_background,
     estimate_profile_fwhm,
-    plot_hkl_sticks,
-    plot_hkl_ticks,
-    plot_peak_intensity_sticks,
-    plot_phase_marker_lane,
-    plot_profile,
-    scale_profile_to_reference,
 )
 from xrd_finder.ui.background_task import BackgroundTaskHandle
+from xrd_finder.ui.candidate_info_actions import PhaseFinderCandidateInfoActionsMixin
+from xrd_finder.ui.candidate_search_actions import PhaseFinderCandidateSearchActionsMixin
+from xrd_finder.ui.candidate_structure_actions import PhaseFinderCandidateStructureActionsMixin
 from xrd_finder.ui.candidate_tables import CandidateTableWidget, SelectedCandidatesTableWidget
 from xrd_finder.ui.compound_card import CompoundCardWidget
+from xrd_finder.ui.composition_panel import CompositionPanel
+from xrd_finder.ui.database_actions import PhaseFinderDatabaseActionsMixin
 from xrd_finder.ui.database_panel import DatabasePanelWidget
 from xrd_finder.ui.element_filter import PeriodicTableWidget, element_sort_key
 from xrd_finder.ui.finder_action_bar import FinderActionBar
+from xrd_finder.ui.help_text import PHASE_FINDER_HELP_TEXT, PHASE_FINDER_HELP_TITLE
+from xrd_finder.ui.layout_state import SplitterLayoutState
+from xrd_finder.ui.match_profile_renderer import build_finder_candidate_inputs, draw_match_profile_result
+from xrd_finder.ui.observed_pattern_actions import PhaseFinderObservedPatternActionsMixin
+from xrd_finder.ui.peak_marker_renderer import (
+    add_peak_coverage_markers,
+    assignment_marker_label,
+    primary_assignment,
+)
+from xrd_finder.ui.peak_matching import (
+    PhaseAlignmentEstimate,
+    estimate_phase_alignment,
+    nearest_index as nearest_peak_index,
+    observed_peak_positions,
+    observed_peak_records,
+    peak_presence_probability,
+    peak_probability_from_alignment,
+)
+from xrd_finder.ui.phase_finder_menu import build_phase_finder_menu_bar
+from xrd_finder.ui.plot_actions import PhaseFinderPlotActionsMixin
+from xrd_finder.ui.preprocessing_actions import PhaseFinderPreprocessingActionsMixin
+from xrd_finder.ui.project_state_actions import PhaseFinderProjectStateActionsMixin
+from xrd_finder.ui.project_tree_actions import PhaseFinderProjectTreeActionsMixin
+from xrd_finder.ui.project_controls import ProjectControlsWidget
 from xrd_finder.ui.project_tree import ProjectTree
+from xrd_finder.ui.reference_preview_renderer import draw_pdf2_reference, draw_rruff_reference
+from xrd_finder.ui.selected_phases_actions import PhaseFinderSelectedPhasesActionsMixin
+from xrd_finder.ui.structure_overlay import draw_structure_overlay, prepare_structure_overlay, shifted_peaks as shift_overlay_peaks
+from xrd_finder.ui.theme import is_dark_theme, window_style
 from xrd_finder.ui.xrd_plot import create_xrd_plot_widget
 
 
@@ -114,24 +119,6 @@ ATOMIC_NUMBERS = {
 }
 
 
-@dataclass(slots=True)
-class PhaseAlignmentEstimate:
-    zero_shift: float = 0.0
-    matched_peaks: int = 0
-    total_peaks: int = 0
-    score: float = float("inf")
-    status: str = "unmatched"
-
-
-def _command_button_style(background: str, border: str, color: str = "#ffffff") -> str:
-    return (
-        "QPushButton {"
-        f"background: {background}; border: 1px solid {border}; color: {color};"
-        "border-radius: 5px; padding: 7px 14px; font-weight: 700;"
-        "}"
-        "QPushButton:pressed { padding-top: 8px; padding-bottom: 6px; }"
-    )
-
 class AnalysisWindow(QDialog):
     project_changed = Signal()
     IMPORT_SUFFIXES = {".xy", ".txt", ".dat", ".csv", ".xye", ".cif"}
@@ -139,7 +126,10 @@ class AnalysisWindow(QDialog):
     def __init__(self, project: Project, title: str) -> None:
         super().__init__()
         self.project = project
+        self._base_title = title
         self.setWindowTitle(f"{title} - {project.name}")
+        self._layout_state = SplitterLayoutState(QSettings("Xrdfinder", "Standalone"))
+        self.setStyleSheet(window_style(self._is_dark_theme()))
         self.setAcceptDrops(True)
         self._drop_targets: list[QWidget] = []
         self.setWindowFlags(
@@ -160,48 +150,20 @@ class AnalysisWindow(QDialog):
         self.tree.phase_selection_changed.connect(lambda _ids: self._on_project_tree_selection_changed())
 
         self.sidebar = QWidget()
+        self.sidebar.setMinimumWidth(170)
+        self.sidebar.setMaximumWidth(360)
         self._register_drop_target(self.sidebar)
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(6)
-        import_row = QHBoxLayout()
-        import_row.setContentsMargins(0, 0, 0, 0)
-        import_row.setSpacing(6)
-        import_button = QPushButton("Import XRD / CIF")
-        import_button.setMinimumHeight(34)
-        import_button.setToolTip("Import XRD patterns and CIF structures. You can also drag files into the window.")
-        import_button.setStyleSheet(_command_button_style("#e9328f", "#ff65b3"))
-        import_button.clicked.connect(self._import_scientific_files)
-        new_project_button = QPushButton("New project")
-        new_project_button.setMinimumHeight(34)
-        new_project_button.setToolTip("Clear the current XRD patterns, structures, candidates, and calculated overlays.")
-        new_project_button.setStyleSheet(_command_button_style("#5f6368", "#8a8d91"))
-        new_project_button.clicked.connect(self._new_project)
-        save_project_button = QPushButton("Save project")
-        save_project_button.setMinimumHeight(34)
-        save_project_button.setToolTip("Save the current project manifest, including processed XRD curves.")
-        save_project_button.setStyleSheet(_command_button_style("#2367a5", "#5a9bd8"))
-        save_project_button.clicked.connect(self._save_project)
-        import_row.addWidget(import_button, 2)
-        import_row.addWidget(new_project_button, 1)
-        import_row.addWidget(save_project_button, 1)
-        order_row = QHBoxLayout()
-        order_row.setContentsMargins(0, 0, 0, 0)
-        order_row.setSpacing(4)
-        order_row.addWidget(QLabel("Order"))
-        move_up_button = QToolButton()
-        move_up_button.setText("Up")
-        move_up_button.setToolTip("Move selected XRD or CIF up")
-        move_up_button.clicked.connect(lambda: self._move_current_tree_object(-1))
-        move_down_button = QToolButton()
-        move_down_button.setText("Down")
-        move_down_button.setToolTip("Move selected XRD or CIF down")
-        move_down_button.clicked.connect(lambda: self._move_current_tree_object(1))
-        order_row.addWidget(move_up_button)
-        order_row.addWidget(move_down_button)
-        order_row.addStretch(1)
-        sidebar_layout.addLayout(import_row)
-        sidebar_layout.addLayout(order_row)
+        self.project_controls = ProjectControlsWidget()
+        self.project_controls.newProjectRequested.connect(self._new_project)
+        self.project_controls.loadProjectRequested.connect(self._load_project)
+        self.project_controls.saveProjectRequested.connect(self._save_project)
+        self.project_controls.importRequested.connect(self._import_scientific_files)
+        self.project_controls.moveRequested.connect(self._move_current_tree_object)
+        self._register_drop_target(self.project_controls)
+        sidebar_layout.addWidget(self.project_controls)
         sidebar_layout.addWidget(self.tree, 1)
 
         self.center = QWidget()
@@ -213,15 +175,22 @@ class AnalysisWindow(QDialog):
         self._register_drop_target(self.right_tabs)
         self.right_tabs.setMinimumWidth(280)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.sidebar)
-        splitter.addWidget(self.center)
-        splitter.addWidget(self.right_tabs)
-        splitter.setSizes([260, 820, 300])
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._layout_state.register("main_splitter", self.main_splitter)
+        self.main_splitter.addWidget(self.sidebar)
+        self.main_splitter.addWidget(self.center)
+        self.main_splitter.addWidget(self.right_tabs)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+        self.main_splitter.setSizes([190, 980, 330])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.addWidget(splitter)
+        layout.addWidget(self.main_splitter)
+
+    def _is_dark_theme(self) -> bool:
+        return is_dark_theme(self)
 
     def _open_project_object(self, object_type: str, object_id: str) -> None:
         if object_type == "pattern":
@@ -278,6 +247,28 @@ class AnalysisWindow(QDialog):
         self.tree.set_project(self.project)
         self._after_new_project()
         self.project_changed.emit()
+
+    def _load_project(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load XRD project",
+            self._last_directory(),
+            "XRD project (*.xrd-project.json *.json);;JSON files (*.json);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            project = load_project_manifest(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Load project failed", str(exc))
+            return
+        self._remember_directory(path)
+        self.project = project
+        self.setWindowTitle(f"{self._base_title} - {project.name}")
+        self.tree.set_project(project)
+        self._after_project_loaded()
+        self.project_changed.emit()
+
     def _save_project(self) -> None:
         default_path = self.project.root_path or str(Path(self._last_directory()) / f"{self.project.name}.xrd-project.json")
         path, _ = QFileDialog.getSaveFileName(
@@ -290,6 +281,7 @@ class AnalysisWindow(QDialog):
             return
         try:
             self.project.root_path = path
+            self._sync_finder_state_to_project()
             self.project.touch()
             save_project_manifest(self.project, path)
         except Exception as exc:
@@ -299,6 +291,9 @@ class AnalysisWindow(QDialog):
 
     def _after_new_project(self) -> None:
         self._on_project_tree_selection_changed()
+
+    def _after_project_loaded(self) -> None:
+        self._after_new_project()
 
     def _import_scientific_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -410,10 +405,12 @@ class AnalysisWindow(QDialog):
             QSettings("Xrdfinder", "Standalone").setValue("files/last_directory", str(directory))
 
     def _after_cif_import(self, _path: Path, _phase, _structure) -> None:
-        pass
+        """Hook for subclasses that need to cache or index imported CIF files."""
+        # Intentionally empty in the base standalone window.
 
     def _on_project_tree_selection_changed(self) -> None:
-        pass
+        """Hook for subclasses that react to tree selection/check-state changes."""
+        # Intentionally empty in the base standalone window.
 
     def _active_pattern(self):
         current_pattern_id = self.tree.current_pattern_id()
@@ -448,17 +445,41 @@ class AnalysisWindow(QDialog):
         return table
 
 
-class PhaseFinderWindow(AnalysisWindow):
+class PhaseFinderWindow(
+    PhaseFinderProjectStateActionsMixin,
+    PhaseFinderProjectTreeActionsMixin,
+    PhaseFinderSelectedPhasesActionsMixin,
+    PhaseFinderCandidateInfoActionsMixin,
+    PhaseFinderCandidateStructureActionsMixin,
+    PhaseFinderPreprocessingActionsMixin,
+    PhaseFinderObservedPatternActionsMixin,
+    PhaseFinderPlotActionsMixin,
+    PhaseFinderCandidateSearchActionsMixin,
+    PhaseFinderDatabaseActionsMixin,
+    AnalysisWindow,
+):
     def __init__(self, project: Project) -> None:
         super().__init__(project, "Phase Finder")
         self.resize(1500, 850)
-        self.right_tabs.setMinimumWidth(520)
+        self.right_tabs.setMinimumWidth(360)
+        self._init_filter_state()
+        self._init_services()
+        self._init_runtime_state()
+        self._create_action_bar()
+        self._create_match_plot(project)
+        self._create_candidate_tables()
+        self._create_center_splitter()
+        self._create_right_tabs()
+
+    def _init_filter_state(self) -> None:
         self.element_table: PeriodicTableWidget | None = None
         self.element_states: dict[str, str] = {}
         self.selected_elements: set[str] = set()
         self.selected_element_order: list[str] = []
         self.exclude_all_other_elements = False
         self._last_formula_text = ""
+
+    def _init_services(self) -> None:
         self.settings = QSettings("Xrdfinder", "Standalone")
         self.cod_online = CodOnlineService()
         self.ccdc = CcdcService()
@@ -484,6 +505,8 @@ class PhaseFinderWindow(AnalysisWindow):
         )
         self._background_tasks: set[BackgroundTaskHandle] = set()
         self._start_match_pdf2_preload()
+
+    def _init_runtime_state(self) -> None:
         self.finder_action_bar: FinderActionBar | None = None
         self.search_input: QLineEdit | None = None
         self.name_input: QLineEdit | None = None
@@ -543,6 +566,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self._candidate_activation_timer.setInterval(120)
         self._candidate_activation_timer.timeout.connect(self._activate_pending_candidate_row)
 
+    def _create_action_bar(self) -> None:
         self.finder_action_bar = FinderActionBar()
         self.finder_action_bar.smoothRequested.connect(self._smooth_active_pattern_plot)
         self.finder_action_bar.subtractBackgroundRequested.connect(self._subtract_active_background_plot)
@@ -554,6 +578,7 @@ class PhaseFinderWindow(AnalysisWindow):
         self.search_input = self.finder_action_bar.search_input
         self.center_layout.addWidget(self.finder_action_bar)
 
+    def _create_match_plot(self, project: Project) -> None:
         self.match_plot = self._plot_widget("Phase Finder: pattern and candidate phase markers", xrd_navigation=True)
         self.match_plot.setTitle("Phase Finder: pattern and candidate phase markers", color="#111111", size="13pt")
         self.match_plot.setLabel("bottom", "2theta", color="#111111", **{"font-size": "12pt"})
@@ -567,14 +592,9 @@ class PhaseFinderWindow(AnalysisWindow):
             except Exception:
                 pass
 
-        candidate_rows = [
-            ["USER", phase.id, phase.formula, phase.name, "", "project structure"]
-            for phase in project.phases
-        ]
-        if not candidate_rows:
-            candidate_rows = [["", "", "", "No phases yet", "", ""]]
+    def _create_candidate_tables(self) -> None:
+        candidate_rows = self._project_phase_candidate_rows()
 
-        self.center_layout.addWidget(self.match_plot, 4)
         self.candidate_table = CandidateTableWidget(candidate_rows)
         self.candidate_table.rowActivated.connect(self._queue_candidate_row_activation)
         self.candidate_table.addRequested.connect(self._add_selected_candidate_to_match_list)
@@ -582,26 +602,54 @@ class PhaseFinderWindow(AnalysisWindow):
         self.match_table = SelectedCandidatesTableWidget()
         self.match_table.rowClicked.connect(self._on_match_row_clicked)
         self.match_table.contextRequested.connect(self._show_match_context_menu)
-        candidate_panel = QWidget()
-        candidate_layout = QVBoxLayout(candidate_panel)
+        self.candidate_panel = QWidget()
+        candidate_layout = QVBoxLayout(self.candidate_panel)
         candidate_layout.setContentsMargins(0, 0, 0, 0)
         candidate_layout.setSpacing(4)
         candidate_layout.addWidget(QLabel("Candidate list"))
         candidate_layout.addWidget(self.candidate_table, 1)
-        self.center_layout.addWidget(candidate_panel, 1)
 
+    def _create_center_splitter(self) -> None:
+        self.center_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._layout_state.register("center_splitter", self.center_splitter)
+        self.center_splitter.addWidget(self.match_plot)
+        self.center_splitter.addWidget(self.candidate_panel)
+        self.center_splitter.setStretchFactor(0, 3)
+        self.center_splitter.setStretchFactor(1, 2)
+        self.center_splitter.setSizes([520, 260])
+        self.center_layout.addWidget(self.center_splitter, 1)
+
+    def _create_right_tabs(self) -> None:
         self.right_tabs.addTab(self._composition_tab(), "Elements")
         self.compound_card = CompoundCardWidget()
         self.right_tabs.addTab(self.compound_card, "Card")
         self.right_tabs.addTab(self._database_tab(), "Databases")
-        help_button = QToolButton()
-        help_button.setText("?")
-        help_button.setToolTip("Open quick help")
-        help_button.clicked.connect(self._show_quick_help)
-        self.right_tabs.setCornerWidget(help_button, Qt.Corner.TopRightCorner)
+        self._layout_state.add_pin_corner(self.right_tabs, self._show_quick_help)
+        self._layout_state.restore()
+        self._layout_state.apply_lock()
         self._apply_default_phase_filter()
 
     def _after_new_project(self) -> None:
+        self.project.finder_state = FinderProjectState()
+        self._reset_phase_finder_state(
+            candidate_rows=[["", "", "", "No phases yet", "", ""]],
+            reset_plot_range=True,
+        )
+
+    def _after_project_loaded(self) -> None:
+        self._reset_phase_finder_state(
+            candidate_rows=self._project_phase_candidate_rows(),
+            refresh_observed=True,
+        )
+        self._restore_finder_state_from_project()
+
+    def _reset_phase_finder_state(
+        self,
+        candidate_rows: list[list[str]],
+        *,
+        reset_plot_range: bool = False,
+        refresh_observed: bool = False,
+    ) -> None:
         self._clear_probability_caches()
         self.match_candidates.clear()
         self.match_structures.clear()
@@ -623,14 +671,24 @@ class PhaseFinderWindow(AnalysisWindow):
             self.plot_layers[layer] = []
         if self.legend_item is not None:
             self.legend_item = ensure_right_legend(self.match_plot, clear=True)
-        self.match_plot.setTitle("Phase Finder: pattern and candidate phase markers", color="#111111", size="13pt")
-        self.match_plot.setXRange(0, 1, padding=0.02)
-        self.match_plot.setYRange(0, 1, padding=0.02)
+        if reset_plot_range:
+            self.match_plot.setTitle("Phase Finder: pattern and candidate phase markers", color="#111111", size="13pt")
+            self.match_plot.setXRange(0, 1, padding=0.02)
+            self.match_plot.setYRange(0, 1, padding=0.02)
         self._reset_selected_elements()
-        self._set_candidate_rows([["", "", "", "No phases yet", "", ""]])
+        self._set_candidate_rows(candidate_rows)
         self._update_match_table()
         if self.compound_card is not None:
             self.compound_card.set_candidate(None)
+        if refresh_observed:
+            self._refresh_observed_pattern_plot()
+
+    def _project_phase_candidate_rows(self) -> list[list[str]]:
+        rows = [
+            ["USER", phase.id, phase.formula, phase.name, "", "project structure"]
+            for phase in self.project.phases
+        ]
+        return rows if rows else [["", "", "", "No phases yet", "", ""]]
 
     def closeEvent(self, event) -> None:
         self.candidate_search_service.shutdown_background_downloads()
@@ -666,566 +724,8 @@ class PhaseFinderWindow(AnalysisWindow):
         handle.failed.connect(fail)
         handle.start()
 
-    def _close_preprocessing_panel(self) -> None:
-        panel = getattr(self, "_preprocessing_panel", None)
-        if panel is not None:
-            panel.hide()
-            panel.deleteLater()
-        self._preprocessing_panel = None
-        self._preprocessing_panel_key = None
-
-    def _show_preprocessing_panel(
-        self,
-        key: str,
-        button: QWidget,
-        panel: QWidget,
-        preview_callback,
-        cancel_callback,
-    ) -> None:
-        if getattr(self, "_preprocessing_panel", None) is not None:
-            if getattr(self, "_preprocessing_panel_key", None) == key:
-                self._close_preprocessing_panel()
-                return
-            self._close_preprocessing_panel()
-
-        panel.setParent(self)
-        panel.setWindowFlags(Qt.WindowType.Widget)
-        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        panel.setAutoFillBackground(True)
-        panel.setStyleSheet(
-            "QWidget#preprocessingPanel { background-color: #202124; border: 1px solid #4a5057; border-radius: 6px; }"
-            "QLabel { color: #f1f3f4; }"
-            "QComboBox { background: #2b2f34; color: #f1f3f4; border: 1px solid #4a5057; padding: 3px; }"
-            "QPushButton { background: #33383e; color: #f1f3f4; border: 1px solid #555d66; border-radius: 4px; padding: 5px 12px; }"
-            "QPushButton:hover { border-color: #4aa3df; }"
-            "QSlider::groove:horizontal { height: 5px; background: #4a5057; border-radius: 2px; }"
-            "QSlider::handle:horizontal { width: 15px; margin: -5px 0; border-radius: 7px; background: #4aa3df; }"
-            "QSlider::tick:horizontal { background: #8c96a3; width: 1px; }"
-        )
-        panel.adjustSize()
-        position = button.mapTo(self, button.rect().bottomLeft())
-        max_x = max(0, self.width() - panel.width() - 8)
-        max_y = max(0, self.height() - panel.height() - 8)
-        panel.move(min(max(position.x(), 8), max_x), min(max(position.y() + 4, 8), max_y))
-        panel.raise_()
-
-        def accept_panel() -> None:
-            preview_callback()
-            self._close_preprocessing_panel()
-
-        def cancel_panel() -> None:
-            cancel_callback()
-            self._close_preprocessing_panel()
-
-        panel.previewRequested.connect(preview_callback)
-        panel.applyRequested.connect(accept_panel)
-        panel.cancelRequested.connect(cancel_panel)
-        self._preprocessing_panel = panel
-        self._preprocessing_panel_key = key
-        panel.show()
-
-    def _smooth_active_pattern_plot(self) -> None:
-        data = self._active_observed_data()
-        if data is None:
-            return
-        x = np.asarray(data[:, 0], dtype=float)
-        y = np.asarray(data[:, 1], dtype=float)
-        pattern = self._active_pattern()
-        if pattern is None:
-            return
-        original_processed_points = [list(point) for point in pattern.processed_points]
-        original_processed_label = pattern.processed_label
-        original_background_removed = pattern.processed_background_removed
-        auto_window = max(5, min(21, len(y) // 180 * 2 + 1))
-        panel = SmoothPanel(auto_window, self)
-
-        def preview_smoothing() -> None:
-            window = panel.window_size()
-            method = panel.method()
-            smooth_y = np.asarray(y, dtype=float)
-            for _ in range(panel.passes()):
-                smooth_y = self._smooth_observed_curve(smooth_y, method, window, panel.polyorder(), panel.gaussian_sigma())
-            label_method = {
-                "savgol": "Savitzky-Golay",
-                "moving": "moving average",
-                "gaussian": "Gaussian",
-            }.get(method, method)
-            pass_text = "pass" if panel.passes() == 1 else "passes"
-            self._set_preprocessed_observed_curve(
-                x,
-                smooth_y,
-                f"Observed smoothed ({label_method}, window {window}, {panel.passes()} {pass_text})",
-                pattern.processed_background_removed,
-            )
-
-        def cancel_smoothing() -> None:
-            pattern.processed_points = original_processed_points
-            pattern.processed_label = original_processed_label
-            pattern.processed_background_removed = original_background_removed
-            self._clear_probability_caches()
-            self._refresh_observed_pattern_plot()
-            self._rerun_active_calculation()
-
-        self._show_preprocessing_panel(
-            "smooth",
-            self.finder_action_bar.smooth_button,
-            panel,
-            preview_smoothing,
-            cancel_smoothing,
-        )
-
-    def _smooth_observed_curve(
-        self,
-        y: np.ndarray,
-        method: str,
-        window: int,
-        polyorder: int = 2,
-        gaussian_sigma: float = 0.2,
-    ) -> np.ndarray:
-        if window <= 2 or len(y) < 5:
-            return np.asarray(y, dtype=float)
-        window = min(int(window), len(y) - 1 if len(y) % 2 == 0 else len(y))
-        if window % 2 == 0:
-            window -= 1
-        if window < 3:
-            return np.asarray(y, dtype=float)
-        values = np.asarray(y, dtype=float)
-        if method == "moving":
-            kernel = np.ones(window, dtype=float) / float(window)
-            return np.convolve(values, kernel, mode="same")
-        if method == "gaussian":
-            sigma = max(0.1, float(gaussian_sigma))
-            radius = max(1, int(round(sigma * 4)))
-            grid = np.arange(-radius, radius + 1, dtype=float)
-            kernel = np.exp(-0.5 * (grid / sigma) ** 2)
-            kernel /= float(np.sum(kernel))
-            padded = np.pad(values, (radius, radius), mode="edge")
-            return np.convolve(padded, kernel, mode="same")[radius:-radius]
-        order = max(1, min(int(polyorder), window - 2))
-        try:
-            return np.asarray(savgol_filter(values, window_length=window, polyorder=order, mode="interp"), dtype=float)
-        except Exception:
-            kernel = np.ones(window, dtype=float) / float(window)
-            return np.convolve(values, kernel, mode="same")
-
-    def _subtract_active_background_plot(self) -> None:
-        data = self._active_observed_data()
-        if data is None:
-            return
-        x = np.asarray(data[:, 0], dtype=float)
-        y = np.asarray(data[:, 1], dtype=float)
-        pattern = self._active_pattern()
-        if pattern is None:
-            return
-        original_processed_points = [list(point) for point in pattern.processed_points]
-        original_processed_label = pattern.processed_label
-        original_background_removed = pattern.processed_background_removed
-        panel = BackgroundRemovalPanel(parent=self)
-
-        def preview_background_removal() -> None:
-            method = panel.method()
-            if method == "constant":
-                background = np.full_like(y, float(np.nanpercentile(y, panel.floor_percentile())))
-                label = f"Observed - background constant floor {panel.floor_percentile()}%"
-            else:
-                background = self._estimate_background(x, y, degree=panel.degree(), method=method)
-                label = "Observed - background envelope" if method == "auto" else f"Observed - background polynomial {panel.degree()}"
-            corrected = np.clip(y - background, 0.0, None)
-            self._set_preprocessed_observed_curve(x, corrected, label, True)
-
-        def cancel_background_removal() -> None:
-            pattern.processed_points = original_processed_points
-            pattern.processed_label = original_processed_label
-            pattern.processed_background_removed = original_background_removed
-            self._clear_probability_caches()
-            self._refresh_observed_pattern_plot()
-            self._rerun_active_calculation()
-
-        self._show_preprocessing_panel(
-            "background",
-            self.finder_action_bar.background_button,
-            panel,
-            preview_background_removal,
-            cancel_background_removal,
-        )
-
-    def _reset_observed_preprocessing(self) -> None:
-        pattern = self._active_pattern()
-        if pattern is not None:
-            pattern.processed_points.clear()
-            pattern.processed_label = ""
-            pattern.processed_background_removed = False
-            self.project.touch()
-            self.project_changed.emit()
-        self._clear_probability_caches()
-        self._refresh_observed_pattern_plot()
-        self._rerun_active_calculation()
-
-    def _set_preprocessed_observed_curve(
-        self,
-        x: np.ndarray,
-        y: np.ndarray,
-        name: str,
-        background_removed: bool,
-    ) -> None:
-        pattern = self._active_pattern()
-        if pattern is None:
-            return
-        processed = np.column_stack([x, y])
-        pattern.processed_points = processed.astype(float).tolist()
-        pattern.processed_label = name
-        pattern.processed_background_removed = background_removed
-        self.project.touch()
-        self.project_changed.emit()
-        self._clear_probability_caches()
-        self._replace_observed_curve(x, y, name)
-        self._rerun_active_calculation()
-
-    def _rerun_active_calculation(self) -> None:
-        if self.match_candidates:
-            self._recalculate_match_profile()
-        elif self.active_overlay_entry_id:
-            candidate = self._selected_candidate_row()
-            if candidate is not None:
-                self.active_overlay_entry_id = None
-                self._calculate_candidate_overlay(candidate, show_errors=False)
-
-    def _replace_observed_curve(self, x: np.ndarray, y: np.ndarray, name: str) -> None:
-        pattern = self._active_pattern()
-        self._draw_observed_patterns(
-            active_override=(pattern.id if pattern is not None else "", np.column_stack([x, y]), name)
-        )
-
-
-    def _after_cif_import(self, path: Path, phase, structure) -> None:
-        try:
-            entry = self.local_phase_cache.add_user_cif(path)
-        except Exception:
-            return
-        if entry.cif_path:
-            phase.source_path = entry.cif_path
-            structure.source_path = entry.cif_path
-
-    def _project_phase_user_entry(self, phase) -> str:
-        if not phase.source_path:
-            return phase.id
-        path = Path(phase.source_path)
-        entry_id = path.stem
-        cached_path = self.local_phase_cache.cif_path("USER", entry_id)
-        if cached_path is not None:
-            return entry_id
-        try:
-            entry = self.local_phase_cache.add_user_cif(path)
-        except Exception:
-            return phase.id
-        if entry.cif_path:
-            phase.source_path = entry.cif_path
-            structure = self._structure_for_phase(phase.id)
-            if structure is not None:
-                structure.source_path = entry.cif_path
-        return entry.entry_id or phase.id
-
-    def _structure_for_phase(self, phase_id: str):
-        phase = next((item for item in self.project.phases if item.id == phase_id), None)
-        if phase is None:
-            return None
-        if phase.structure_id:
-            structure = next((item for item in self.project.structures if item.id == phase.structure_id), None)
-            if structure is not None:
-                return structure
-        return next((item for item in self.project.structures if item.phase_id == phase_id), None)
-
-    def _current_tree_phase_structure(self):
-        current = self.tree.current_object()
-        if current is None:
-            return None
-        object_type, object_id = current
-        if object_type != "phase":
-            return None
-        structure = self._structure_for_phase(object_id)
-        if structure is not None:
-            return structure
-        phase = next((item for item in self.project.phases if item.id == object_id), None)
-        if phase is None or not phase.source_path:
-            return None
-        try:
-            _phase, structure = create_phase_from_cif(phase.source_path)
-            structure.name = phase.name or structure.name
-            structure.formula = phase.formula or structure.formula
-            structure.phase_id = phase.id
-            structure.id = phase.structure_id or structure.id
-            return structure
-        except Exception:
-            return None
-    def _refresh_project_phase_candidates(self) -> None:
-        if not hasattr(self, "candidate_table"):
-            return
-        rows = [
-            ["USER", self._project_phase_user_entry(phase), phase.formula, phase.name, "", "loaded structure"]
-            for phase in self.project.phases
-        ]
-        if not rows:
-            rows = [["", "", "", "No phases yet", "", ""]]
-        self._set_candidate_rows(rows)
-
-    def _on_project_tree_selection_changed(self) -> None:
-        if not hasattr(self, "match_plot"):
-            return
-        self._clear_probability_caches()
-        view_range = self._plot_view_range() if self.show_all_selected_patterns else None
-        try:
-            self._refresh_observed_pattern_plot()
-            tree_structure = self._current_tree_phase_structure()
-            if tree_structure is not None:
-                self.active_overlay_entry_id = None
-                self._clear_preview_overlay()
-                self._calculate_structure_overlay(tree_structure, preview=False)
-            elif self.match_candidates:
-                self._recalculate_match_profile()
-            elif self.active_overlay_entry_id:
-                candidate = self._selected_candidate_row()
-                if candidate is not None:
-                    self.active_overlay_entry_id = None
-                    self._calculate_candidate_overlay(candidate, show_errors=False)
-        finally:
-            self._restore_plot_view_range(view_range)
-
-    def _set_pattern_display_mode(self, mode: str) -> None:
-        self.show_all_selected_patterns = mode == "All selected"
-        self._refresh_observed_pattern_plot()
-        self._rerun_active_calculation()
-
-    def _set_pattern_stack_offset(self, percent: int) -> None:
-        self.pattern_stack_offset_percent = max(0, int(percent))
-        if self.show_all_selected_patterns:
-            self._refresh_observed_pattern_plot()
-            self._rerun_active_calculation()
-
-    def _pattern_processed_observed_data(self, pattern: Pattern | None) -> np.ndarray | None:
-        if pattern is None or not pattern.processed_points:
-            return None
-        data = np.asarray(pattern.processed_points, dtype=float)
-        if data.ndim != 2 or data.shape[1] < 2 or len(data) == 0:
-            return None
-        return data[:, :2]
-
-    def _active_processed_observed_data(self) -> np.ndarray | None:
-        return self._pattern_processed_observed_data(self._active_pattern())
-
-    def _active_background_removed(self) -> bool:
-        pattern = self._active_pattern()
-        return bool(pattern is not None and pattern.processed_background_removed)
-
-    def _active_observed_data(self):
-        pattern = self._active_pattern()
-        if pattern is None:
-            return None
-        processed = self._pattern_processed_observed_data(pattern)
-        if processed is not None:
-            return processed
-        try:
-            return load_xy(pattern.source_path)
-        except Exception:
-            return None
-
-    def _refresh_observed_pattern_plot(self) -> None:
-        self._draw_observed_patterns()
-
-    def _patterns_to_display(self):
-        if self.show_all_selected_patterns:
-            checked = set(self.tree.checked_pattern_ids())
-            patterns = [pattern for pattern in self.project.patterns if pattern.id in checked]
-            if patterns:
-                return patterns
-        pattern = self._active_pattern()
-        return [pattern] if pattern is not None else []
-
-    def _draw_observed_patterns(self, active_override=None) -> None:
-        for item in self.plot_layers.get("observed", []):
-            self.match_plot.removeItem(item)
-        self.plot_layers["observed"] = []
-        self.legend_item = ensure_right_legend(self.match_plot, clear=True)
-        self.observed_pattern_plot_context = {}
-
-        patterns = self._patterns_to_display()
-        active_pattern = self._active_pattern()
-        active_id = active_pattern.id if active_pattern is not None else ""
-        colors = ["#202124", "#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa", "#00acc1", "#c5221f"]
-        x_values = []
-        y_values = []
-        color_index = 0
-        loaded_patterns = []
-
-        for pattern in patterns:
-            try:
-                if active_override is not None and pattern.id == active_override[0]:
-                    data = np.asarray(active_override[1], dtype=float)
-                    name = active_override[2]
-                else:
-                    processed = self._pattern_processed_observed_data(pattern)
-                    if processed is not None:
-                        data = processed
-                        name = pattern.processed_label or f"Observed processed: {pattern.name}"
-                    else:
-                        data = load_xy(pattern.source_path)
-                        name = f"Observed: {pattern.name}"
-            except Exception:
-                continue
-            if data is None or len(data) == 0:
-                continue
-            x = np.asarray(data[:, 0], dtype=float)
-            y = np.asarray(data[:, 1], dtype=float)
-            finite_y = y[np.isfinite(y)]
-            pattern_height = float(np.nanmax(finite_y) - np.nanmin(finite_y)) if finite_y.size else 0.0
-            loaded_patterns.append((pattern, name, x, y, pattern_height))
-
-        offsets: dict[str, float] = {}
-        if self.show_all_selected_patterns:
-            y_offset = 0.0
-            previous_height = 0.0
-            for pattern, _name, _x, _y, pattern_height in reversed(loaded_patterns):
-                if offsets:
-                    y_offset += previous_height * (self.pattern_stack_offset_percent / 100.0)
-                offsets[pattern.id] = y_offset
-                previous_height = pattern_height
-
-        for pattern, name, x, raw_y, pattern_height in loaded_patterns:
-            y_offset = offsets.get(pattern.id, 0.0)
-            y = raw_y + y_offset
-            if pattern.id == active_id:
-                color = "#202124"
-            else:
-                color_index += 1
-                color = colors[color_index % len(colors)]
-            width = 1.35 if pattern.id == active_id else 1.15
-            alpha_color = color
-            curve_item = self.match_plot.plot(x, y, pen=pg.mkPen(alpha_color, width=width))
-            legend_proxy = self.match_plot.plot(
-                [],
-                [],
-                pen=pg.mkPen(alpha_color, width=width),
-                symbol="o" if pattern.id == active_id else None,
-                symbolSize=7,
-                symbolBrush=pg.mkBrush("#e11d21") if pattern.id == active_id else None,
-                symbolPen=pg.mkPen("#e11d21", width=1.0) if pattern.id == active_id else None,
-                name=name,
-            )
-            self.plot_layers["observed"].extend([curve_item, legend_proxy])
-            finite_raw_y = raw_y[np.isfinite(raw_y)]
-            raw_min = float(np.nanmin(finite_raw_y)) if finite_raw_y.size else 0.0
-            raw_max = float(np.nanmax(finite_raw_y)) if finite_raw_y.size else 1.0
-            self.observed_pattern_plot_context[pattern.id] = {
-                "offset": float(y_offset),
-                "raw_min": raw_min,
-                "raw_max": raw_max,
-                "plot_min": raw_min + float(y_offset),
-                "plot_max": raw_max + float(y_offset),
-                "height": float(pattern_height),
-            }
-            x_values.append(x)
-            y_values.append(y)
-
-        if x_values and y_values and not self.match_plot_view_initialized:
-            self._reset_match_plot_view()
-
-    def _plot_view_range(self) -> tuple[tuple[float, float], tuple[float, float]]:
-        view_range = self.match_plot.plotItem.vb.viewRange()
-        return (tuple(view_range[0]), tuple(view_range[1]))
-
-    def _restore_plot_view_range(self, view_range: tuple[tuple[float, float], tuple[float, float]] | None) -> None:
-        if view_range is None:
-            return
-        (xmin, xmax), (ymin, ymax) = view_range
-        self.match_plot.setXRange(float(xmin), float(xmax), padding=0.0)
-        self.match_plot.setYRange(float(ymin), float(ymax), padding=0.0)
-
-    def _active_pattern_plot_context(self) -> dict[str, float]:
-        pattern = self._active_pattern()
-        if pattern is None:
-            return {"offset": 0.0, "raw_min": 0.0, "raw_max": 1.0, "plot_min": 0.0, "plot_max": 1.0, "height": 1.0}
-        return self.observed_pattern_plot_context.get(
-            pattern.id,
-            {"offset": 0.0, "raw_min": 0.0, "raw_max": 1.0, "plot_min": 0.0, "plot_max": 1.0, "height": 1.0},
-        )
-
-    def _reset_match_plot_view(self) -> None:
-        self.match_plot.autoRange()
-        self.match_plot_view_initialized = True
-
     def _match_menu_bar(self) -> QMenuBar:
-        menu_bar = QMenuBar()
-
-        file_menu = menu_bar.addMenu("File")
-        file_menu.addAction("Insert/overlay...")
-        file_menu.addAction("Restore original pattern")
-
-        edit_menu = menu_bar.addMenu("Edit")
-        edit_menu.addAction("Sample ID...")
-        edit_menu.addAction("Sample date/time...")
-
-        view_menu = menu_bar.addMenu("View")
-        view_menu.addAction("Show grid")
-        view_menu.addAction("Autoscale")
-        view_menu.addAction("Reset zoom")
-
-        pattern_menu = menu_bar.addMenu("Pattern")
-        pattern_menu.addAction("Insert/overlay...")
-
-        automatic_menu = pattern_menu.addMenu("Automatic")
-        automatic_menu.addAction("Increase resolution...")
-        automatic_menu.addAction("Strip K-Alpha2")
-        automatic_menu.addAction("Edit background")
-        automatic_menu.addAction("Recalculate background")
-        automatic_menu.addAction("Subtract background")
-        automatic_menu.addAction("Smooth raw data")
-        automatic_menu.addSeparator()
-        automatic_menu.addAction("Correct zero-point error")
-        automatic_menu.addAction("Correct specimen-displacement")
-
-        peak_search_menu = pattern_menu.addMenu("Peak searching")
-        peak_search_menu.addAction("Find peaks")
-        peak_search_menu.addAction("Mark selected peaks")
-        peak_search_menu.addAction("Clear peak list")
-
-        profile_menu = pattern_menu.addMenu("Profile fitting")
-        profile_menu.addAction("Fit selected peaks")
-        profile_menu.addAction("Calculate profile integrals...")
-
-        pattern_menu.addSeparator()
-        pattern_menu.addAction("Resolution...")
-        pattern_menu.addAction("Wavelength...")
-
-        peaks_menu = menu_bar.addMenu("Peaks")
-        peaks_menu.addAction("Add peak")
-        peaks_menu.addAction("Delete peak")
-        peaks_menu.addAction("Peak list")
-
-        search_menu = menu_bar.addMenu("Search")
-        search_menu.addAction("Search by name/formula", self._search_pdf2_text)
-        search_menu.addAction("Search by peaks", self._search_pdf2_candidates)
-        search_menu.addAction("Search by formula")
-        search_menu.addAction("Search by elements")
-
-        entries_menu = menu_bar.addMenu("Entries")
-        entries_menu.addAction("Add selected to working set", self._add_selected_candidate_to_match_list)
-        entries_menu.addAction("Add selected CIF to project", self._add_selected_cif_to_project)
-        entries_menu.addAction("Open entry card")
-        entries_menu.addAction("Candidate list")
-
-        database_menu = menu_bar.addMenu("Database")
-        database_menu.addAction("Project phases")
-        database_menu.addAction("Materials Project")
-        database_menu.addAction("User phase library")
-        database_menu.addAction("Database settings", self._show_database_settings_tab)
-
-        tools_menu = menu_bar.addMenu("Tools")
-        tools_menu.addAction("Calibrate pattern")
-        tools_menu.addAction("Export candidate list")
-
-        help_menu = menu_bar.addMenu("Help")
-        help_menu.addAction("Phase Finder help")
-
-        return menu_bar
+        return build_phase_finder_menu_bar(self)
 
     def _match_tool_bar(self) -> QWidget:
         wrapper = QWidget()
@@ -1267,942 +767,28 @@ class PhaseFinderWindow(AnalysisWindow):
         return wrapper
 
     def _composition_tab(self) -> QWidget:
-        widget = QWidget()
-        outer_layout = QVBoxLayout(widget)
-        top_row = QHBoxLayout()
-        top_row.addWidget(QLabel("Element filters"))
-        top_row.addStretch(1)
-        top_row.addWidget(QLabel("Scale"))
-        scale = QComboBox()
-        scale.addItems(["90%", "100%", "110%", "120%"])
-        scale.setCurrentText("100%")
-        top_row.addWidget(scale)
-        outer_layout.addLayout(top_row)
+        panel = CompositionPanel(self.match_table, self._layout_state)
+        panel.requiredElementToggled.connect(self._toggle_required_element)
+        panel.optionalElementToggled.connect(self._toggle_optional_element)
+        panel.searchRequested.connect(self._search_from_controls)
+        panel.resetRequested.connect(self._reset_selected_elements)
 
-        self.element_table = PeriodicTableWidget()
-        self.element_table.leftClicked.connect(self._toggle_required_element)
-        self.element_table.rightClicked.connect(self._toggle_optional_element)
-        scale.currentTextChanged.connect(self.element_table.set_scale)
-        outer_layout.addWidget(self.element_table)
-
-        self.name_input = QLineEdit()
-        self.name_input.hide()
-        self.elem_count_input = QLineEdit()
-        self.elem_count_input.hide()
-        self.formula_sum_input = QLineEdit()
-        self.formula_sum_input.hide()
-        self.element_gate_label = QLabel("Gate: none")
-        outer_layout.addWidget(self.element_gate_label)
-        self.ccdc_doi_input = QLineEdit()
-        self.ccdc_doi_input.setPlaceholderText("CCDC DOI / CSD refcode")
-        self.ccdc_doi_input.returnPressed.connect(self._search_from_controls)
-        outer_layout.addWidget(self.ccdc_doi_input)
-        material_row = QHBoxLayout()
-        self.inorganics_checkbox = QCheckBox("Inorganic")
-        self.inorganics_checkbox.setChecked(True)
-        self.inorganics_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
-        self.organics_checkbox = QCheckBox("Organic")
-        self.organics_checkbox.setChecked(False)
-        self.organics_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
-        material_row.addWidget(self.inorganics_checkbox)
-        material_row.addWidget(self.organics_checkbox)
-        material_row.addStretch(1)
-        outer_layout.addLayout(material_row)
-        data_mode_row = QHBoxLayout()
-        self.structural_data_checkbox = QCheckBox("Structural data")
-        self.structural_data_checkbox.setChecked(True)
-        self.structural_data_checkbox.setToolTip("Include sources with CIF or atomic coordinates that can be calculated.")
-        self.structural_data_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
-        self.reference_patterns_checkbox = QCheckBox("Experimental/reference patterns")
-        self.reference_patterns_checkbox.setChecked(True)
-        self.reference_patterns_checkbox.setToolTip("Include RRUFF and PDF-2 diffraction-line cards as reference overlays.")
-        self.reference_patterns_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
-        self.rank_by_probability_checkbox = QCheckBox("Rank by peak match")
-        self.rank_by_probability_checkbox.setChecked(True)
-        self.rank_by_probability_checkbox.setToolTip("Estimate whether locally available structural candidates have peaks present in the active XRD pattern.")
-        self.rank_by_probability_checkbox.toggled.connect(lambda _checked: self._search_from_controls())
-        data_mode_row.addWidget(self.structural_data_checkbox)
-        data_mode_row.addWidget(self.reference_patterns_checkbox)
-        data_mode_row.addWidget(self.rank_by_probability_checkbox)
-        data_mode_row.addStretch(1)
-        outer_layout.addLayout(data_mode_row)
-        actions = QHBoxLayout()
-        search_button = QPushButton("Find")
-        search_button.setMinimumHeight(34)
-        search_button.setToolTip("Search candidate phases using the selected required/optional elements and enabled databases.")
-        search_button.setStyleSheet(_command_button_style("#0b8043", "#35a96c"))
-        search_button.clicked.connect(self._search_from_controls)
-        reset_button = QPushButton("Reset table")
-        reset_button.setMinimumHeight(34)
-        reset_button.setToolTip("Clear element filters and reset the candidate list.")
-        reset_button.setStyleSheet(_command_button_style("#5f6368", "#8a8d91"))
-        reset_button.clicked.connect(self._reset_selected_elements)
-        actions.addWidget(search_button)
-        actions.addWidget(reset_button)
-        outer_layout.addLayout(actions)
-        outer_layout.addWidget(QLabel("Selected candidates"))
-        outer_layout.addWidget(self.match_table, 1)
-        return widget
+        self.composition_splitter = panel.splitter
+        self.element_table = panel.element_table
+        self.name_input = panel.name_input
+        self.elem_count_input = panel.elem_count_input
+        self.formula_sum_input = panel.formula_sum_input
+        self.element_gate_label = panel.element_gate_label
+        self.ccdc_doi_input = panel.ccdc_doi_input
+        self.inorganics_checkbox = panel.inorganics_checkbox
+        self.organics_checkbox = panel.organics_checkbox
+        self.structural_data_checkbox = panel.structural_data_checkbox
+        self.reference_patterns_checkbox = panel.reference_patterns_checkbox
+        self.rank_by_probability_checkbox = panel.rank_by_probability_checkbox
+        return panel
 
     def _show_quick_help(self) -> None:
-        QMessageBox.information(
-            self,
-            "XRD Phase Finder Help",
-            (
-                "Quick help\n\n"
-                "Project tree\n"
-                "- Select an XRD row to make it active for search, preview and calculation.\n"
-                "- Checkboxes control which XRD patterns or CIF phases are visible.\n"
-                "- Double click an XRD row to show only that pattern.\n"
-                "- Use Order arrows to change plot and legend order.\n\n"
-                "Element table\n"
-                "- Left click: required element, shown in blue.\n"
-                "- Right click: optional element, shown in green.\n"
-                "- Click again to remove that element from the gate.\n\n"
-                "Candidate list\n"
-                "- Single click: preview candidate peaks and show the card.\n"
-                "- Double click: add the candidate to Selected candidates.\n"
-                "- Right click: add, calculate overlay, or export candidate CIF.\n\n"
-                "Selected candidates\n"
-                "- Single click: show that selected phase on the plot and card.\n"
-                "- Right click: change color, export CIF, remove phase, or clear the list.\n\n"
-                "Plot\n"
-                "- Mouse wheel or drag: zoom/pan.\n"
-                "- Reset view restores the full pattern.\n"
-                "- Right click the plot to export an image or show the full pattern.\n\n"
-                "Databases\n"
-                "- Databases are enabled with checkboxes.\n"
-                "- Large COD/RRUFF databases are downloaded and indexed only when you choose it."
-            ),
-        )
-
-    def _queue_candidate_row_activation(self, row: int) -> None:
-        self._pending_candidate_row = row
-        self._candidate_activation_timer.start()
-
-    def _activate_pending_candidate_row(self) -> None:
-        row = self._pending_candidate_row
-        self._pending_candidate_row = -1
-        self._on_candidate_row_activated(row)
-
-    def _on_candidate_row_activated(self, row: int) -> None:
-        candidate = self._candidate_row_values(row)
-        if not candidate:
-            return
-        self._enrich_candidate_with_structure_info(candidate)
-        self._refresh_candidate_table_row(row, candidate)
-        self.candidate_table.set_iic(row, candidate.get("I/Ic*", ""))
-        self._update_compound_card(candidate)
-        self._preview_candidate_row(row)
-
-    def _update_compound_card(self, candidate: dict[str, str] | None) -> None:
-        if self.compound_card is not None:
-            self.compound_card.set_candidate(candidate)
-
-    def _enrich_candidate_with_structure_info(self, candidate: dict[str, str]) -> None:
-        if self._candidate_source(candidate) == "PDF2" and candidate.get("Entry"):
-            self._enrich_candidate_with_pdf2_info(candidate)
-            return
-        if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC", "AFLOW", "OQMD"} or not candidate.get("Entry"):
-            return
-        try:
-            cif_path = self._candidate_cif_path(candidate)
-            _phase, structure = create_phase_from_cif(cif_path)
-        except Exception:
-            return
-        if structure.name:
-            candidate["Phase"] = structure.name
-        if structure.formula:
-            candidate["Formula"] = self.candidate_search_service.display_formula(structure.formula)
-        iic = self._estimate_structure_corundum_iic(structure)
-        if iic > 0:
-            candidate["I/Ic*"] = f"{iic:.3g}"
-        probability = self._structure_peak_probability(structure)
-        if probability > 0:
-            candidate["Prob."] = f"{probability:.0f}%"
-        candidate["Space group"] = structure.space_group or structure.space_group_number or ""
-        cell = structure.cell
-        if all(getattr(cell, name, None) is not None for name in ("a", "b", "c", "alpha", "beta", "gamma")):
-            candidate["Cell"] = (
-                f"a {cell.a:.4g}   b {cell.b:.4g}   c {cell.c:.4g}\n"
-                f"alpha {cell.alpha:.4g}   beta {cell.beta:.4g}   gamma {cell.gamma:.4g}"
-            )
-            candidate["Crystal system"] = self._crystal_system_from_cell(cell)
-        atoms = []
-        atom_rows = []
-        for atom in (structure.atoms or [])[:48]:
-            coords = []
-            for value in (atom.x, atom.y, atom.z):
-                coords.append(f"{value:.4g}" if value is not None else "?")
-            occ = f", occ={atom.occupancy:.3g}" if atom.occupancy is not None else ""
-            atoms.append(f"{atom.label or atom.element} {atom.element} ({', '.join(coords)}{occ})")
-            b_value = atom.biso if atom.biso is not None else atom.uiso
-            atom_rows.append([
-                atom.label or atom.element,
-                atom.element,
-                coords[0],
-                coords[1],
-                coords[2],
-                f"{atom.occupancy:.3g}" if atom.occupancy is not None else "",
-                f"{b_value:.3g}" if b_value is not None else "",
-            ])
-        if atoms:
-            suffix = "" if len(structure.atoms) <= 48 else f"\n... +{len(structure.atoms) - 48} atoms"
-            candidate["Atoms"] = "\n".join(atoms) + suffix
-            candidate["_AtomRows"] = atom_rows
-        diffraction_rows = self._diffraction_rows_for_structure(structure)
-        if diffraction_rows:
-            candidate["_DiffractionRows"] = diffraction_rows
-        publication = str(structure.metadata.get("publication", "") or "")
-        if publication:
-            candidate["Notes"] = publication
-        doi = str(structure.metadata.get("doi", "") or "")
-        if doi:
-            candidate["DOI"] = doi
-
-    def _crystal_system_from_cell(self, cell: CellParameters) -> str:
-        lengths = [cell.a, cell.b, cell.c]
-        angles = [cell.alpha, cell.beta, cell.gamma]
-        if any(value is None for value in lengths + angles):
-            return ""
-        a, b, c = (float(value) for value in lengths)
-        alpha, beta, gamma = (float(value) for value in angles)
-
-        def close(left: float, right: float, tolerance: float = 0.03) -> bool:
-            return abs(left - right) <= tolerance
-
-        def angle90(value: float) -> bool:
-            return abs(value - 90.0) <= 0.2
-
-        if all(angle90(value) for value in (alpha, beta, gamma)):
-            if close(a, b) and close(b, c):
-                return "cubic"
-            if close(a, b):
-                return "tetragonal"
-            return "orthorhombic"
-        if angle90(alpha) and angle90(beta) and abs(gamma - 120.0) <= 0.3 and close(a, b):
-            return "hexagonal/trigonal"
-        if sum(angle90(value) for value in (alpha, beta, gamma)) == 2:
-            return "monoclinic"
-        return "triclinic"
-
-    def _enrich_candidate_with_pdf2_info(self, candidate: dict[str, str]) -> None:
-        details = self.match_pdf2.card_details(candidate.get("Entry", ""))
-        if details.get("space_group"):
-            candidate["Space group"] = str(details.get("space_group", ""))
-        if details.get("space_group_number"):
-            candidate["Space group"] = " ".join(
-                part for part in [candidate.get("Space group", ""), str(details.get("space_group_number", ""))] if part
-            )
-        cell_details = details.get("cell")
-        if isinstance(cell_details, dict):
-            cell = CellParameters(
-                a=cell_details.get("a"),
-                b=cell_details.get("b"),
-                c=cell_details.get("c"),
-                alpha=cell_details.get("alpha"),
-                beta=cell_details.get("beta"),
-                gamma=cell_details.get("gamma"),
-                volume=cell_details.get("volume"),
-            )
-            if all(getattr(cell, name, None) is not None for name in ("a", "b", "c", "alpha", "beta", "gamma")):
-                candidate["Cell"] = (
-                    f"a {cell.a:.4g}   b {cell.b:.4g}   c {cell.c:.4g}\n"
-                    f"alpha {cell.alpha:.4g}   beta {cell.beta:.4g}   gamma {cell.gamma:.4g}"
-                )
-                candidate["Crystal system"] = self._crystal_system_from_cell(cell)
-        peaks = self._pdf2_peaks_for_candidate(candidate)
-        if not peaks:
-            return
-        rows = []
-        for peak in peaks[:80]:
-            rows.append([
-                f"{getattr(peak, 'd_spacing', 0.0):.5g}",
-                f"{getattr(peak, 'two_theta', 0.0):.5g}",
-                f"{getattr(peak, 'intensity', 0.0):.3g}",
-                str(getattr(peak, "h", "") or ""),
-                str(getattr(peak, "k", "") or ""),
-                str(getattr(peak, "l", "") or ""),
-                "",
-            ])
-        candidate["_DiffractionRows"] = rows
-
-    def _pdf2_peaks_for_candidate(self, candidate: dict[str, str]):
-        wavelength = self._active_wavelength()
-        peaks = []
-        for peak in self.match_pdf2.diffraction_peaks(candidate.get("Entry", "")):
-            ratio = wavelength / (2.0 * peak.d_spacing)
-            if ratio <= 0.0 or ratio > 1.0:
-                continue
-            two_theta = math.degrees(2.0 * math.asin(ratio))
-            peaks.append(
-                SimpleNamespace(
-                    two_theta=two_theta,
-                    reference_two_theta=two_theta,
-                    d_spacing=peak.d_spacing,
-                    intensity=peak.intensity,
-                    h=peak.h,
-                    k=peak.k,
-                    l=peak.l,
-                )
-            )
-        return peaks
-
-    def _diffraction_rows_for_structure(self, structure) -> list[list[str]]:
-        try:
-            peaks = self.calculated_pattern_service.calculate_sticks(
-                structure,
-                wavelength=self._active_wavelength(),
-                two_theta_min=5.0,
-                two_theta_max=120.0,
-                intensity_min=0.5,
-            )
-        except Exception:
-            return []
-        peaks = sorted(peaks, key=lambda peak: peak.two_theta)[:60]
-        return [
-            [
-                f"{peak.d:.4f}",
-                f"{peak.two_theta:.3f}",
-                f"{peak.intensity:.1f}",
-                str(peak.h),
-                str(peak.k),
-                str(peak.l),
-                str(peak.multiplicity),
-            ]
-            for peak in peaks
-        ]
-
-    def _refresh_candidate_table_row(self, row: int, candidate: dict[str, str]) -> None:
-        if row < 0 or row >= self.candidate_table.rowCount():
-            return
-        for header, value in {
-            "Formula": candidate.get("Formula", ""),
-            "Phase": candidate.get("Phase", ""),
-            "Prob.": candidate.get("Prob.", ""),
-            "I/Ic*": candidate.get("I/Ic*", ""),
-        }.items():
-            column = -1
-            for index in range(self.candidate_table.columnCount()):
-                header_item = self.candidate_table.horizontalHeaderItem(index)
-                if header_item is not None and header_item.text() == header:
-                    column = index
-                    break
-            if column >= 0 and value:
-                self.candidate_table.setItem(row, column, QTableWidgetItem(value))
-
-    def _on_match_row_clicked(self, row: int) -> None:
-        if row < 0 or row >= len(self.match_candidates):
-            return
-        candidate = self.match_candidates[row]
-        self._enrich_candidate_with_structure_info(candidate)
-        self._update_compound_card(candidate)
-        self._recalculate_match_profile()
-
-    def _show_candidate_context_menu(self, global_point) -> None:
-        candidate = self._selected_candidate_row()
-        has_structure = self._candidate_has_structure(candidate)
-        menu = QMenu(self)
-        menu.addAction("Add to working set", self._add_selected_candidate_to_match_list)
-        calculate_action = menu.addAction("Calculate pattern overlay", self._calculate_selected_cif_overlay)
-        export_action = menu.addAction("Export candidate CIF...", self._export_candidate_table_cif)
-        for action in (calculate_action, export_action):
-            action.setEnabled(has_structure)
-            if not has_structure:
-                action.setToolTip("This candidate is a reference pattern; no CIF structure is available.")
-        menu.exec(global_point)
-
-    def _show_match_context_menu(self, global_point) -> None:
-        row = self.match_table.currentRow()
-        candidate = self.match_candidates[row] if 0 <= row < len(self.match_candidates) else None
-        has_structure = self._candidate_has_structure(candidate)
-        menu = QMenu(self)
-        recalculate_action = menu.addAction("Recalculate selected profile", self._recalculate_match_profile)
-        menu.addAction("Change color...", self._change_selected_match_color)
-        export_action = menu.addAction("Export phase CIF...", self._export_match_table_cif)
-        for action in (recalculate_action, export_action):
-            action.setEnabled(has_structure)
-            if not has_structure:
-                action.setToolTip("This selected item is a reference pattern; no CIF structure is available.")
-        menu.addAction("Remove selected phase", self._remove_selected_match_candidate)
-        menu.addAction("Clear working set", self._clear_match_list)
-        menu.exec(global_point)
-
-    def _show_plot_context_menu(self, point) -> None:
-        menu = QMenu(self)
-        menu.addAction("Export image...", self._export_plot_image)
-        menu.addSeparator()
-        menu.addAction("Show full pattern", self._full_pattern_range)
-        grid_action = menu.addAction("Grid")
-        grid_action.setCheckable(True)
-        grid_action.setChecked(self.grid_visible)
-        grid_action.toggled.connect(self._set_grid_visible)
-        legend_action = menu.addAction("Legend")
-        legend_action.setCheckable(True)
-        legend_action.setChecked(self.legend_item is not None)
-        legend_action.toggled.connect(self._set_legend_visible)
-        hkl_action = menu.addAction("HKL labels")
-        hkl_action.setCheckable(True)
-        hkl_action.setChecked(self.show_hkl_labels)
-        hkl_action.toggled.connect(self._set_hkl_labels_enabled)
-        menu.addAction(self._layer_action("Experimental pattern", "observed"))
-        menu.addAction(self._layer_action("Candidate preview", "preview_peak_positions"))
-        menu.addAction(self._layer_action("Total calculated profile", "total_profile"))
-        menu.addAction(self._layer_action("Individual phase profiles", "phase_profiles"))
-        menu.addAction(self._layer_action("Background", "background"))
-        menu.addAction(self._layer_action("Phase tick marks", "phase_ticks"))
-        menu.addAction(self._layer_action("Assignment markers", "coverage_markers"))
-        menu.addAction(self._layer_action("Peak labels (HKL)", "peak_labels"))
-        menu.addAction(self._layer_action("Unknown peaks", "unknown_peaks"))
-        menu.addSeparator()
-        menu.addAction("Hide calculated overlay", lambda: self._set_calculated_visible(False))
-        menu.addAction("Show calculated overlay", lambda: self._set_calculated_visible(True))
-        menu.addAction("Clear calculated overlay", self._clear_calculated_overlay)
-        menu.exec(self.match_plot.mapToGlobal(point))
-
-    def _export_plot_image(self) -> None:
-        path, _selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "Export image",
-            str(Path(self._last_directory()) / "xrd_finder_plot.png"),
-            "PNG image (*.png);;JPEG image (*.jpg *.jpeg)",
-        )
-        if not path:
-            return
-        self._remember_directory(path)
-        if not re.search(r"\.(png|jpe?g)$", path, flags=re.IGNORECASE):
-            path += ".png"
-        try:
-            from pyqtgraph.exporters import ImageExporter
-
-            exporter = ImageExporter(self.match_plot.plotItem)
-            params = exporter.parameters()
-            current_width = max(float(self.match_plot.width()), 1.0)
-            target_width = max(3200.0, current_width * 2.0)
-            params["width"] = target_width
-            exporter.export(path)
-        except Exception as exc:
-            if not self.match_plot.grab().save(path):
-                QMessageBox.warning(self, "Export image", f"Could not save current plot image:\n{exc}")
-
-    def _export_candidate_table_cif(self) -> None:
-        candidate = self._selected_candidate_row()
-        if candidate is None:
-            QMessageBox.information(self, "Export CIF", "Select a candidate row first.")
-            return
-        self._export_candidate_cif(candidate)
-
-    def _export_match_table_cif(self) -> None:
-        row = self.match_table.currentRow()
-        if row < 0 or row >= len(self.match_candidates):
-            QMessageBox.information(self, "Export CIF", "Select a phase row first.")
-            return
-        self._export_candidate_cif(self.match_candidates[row])
-
-    def _export_candidate_cif(self, candidate: dict[str, str]) -> None:
-        try:
-            source = self._candidate_cif_path(candidate)
-        except Exception as exc:
-            QMessageBox.warning(self, "Export CIF", str(exc))
-            return
-        default_name = f"{self._candidate_phase_name(candidate) or candidate.get('Entry') or 'phase'}.cif"
-        default_name = re.sub(r"[^A-Za-z0-9._-]+", "_", default_name).strip("_") or "phase.cif"
-        path, _selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "Export CIF",
-            str(Path(self._last_directory()) / default_name),
-            "CIF structure (*.cif)",
-        )
-        if not path:
-            return
-        self._remember_directory(path)
-        if not path.lower().endswith(".cif"):
-            path += ".cif"
-        try:
-            shutil.copy2(source, path)
-        except Exception as exc:
-            QMessageBox.warning(self, "Export CIF", str(exc))
-
-    def _layer_action(self, label: str, layer: str, checked: bool | None = None, enabled: bool = True):
-        action = self._make_action(label)
-        action.setCheckable(True)
-        has_items = bool(self.plot_layers.get(layer, []))
-        action.setEnabled(enabled and has_items)
-        action.setChecked(self._layer_visible(layer) if checked is None else checked)
-        if enabled and has_items:
-            action.toggled.connect(lambda visible, key=layer: self._set_layer_visible(key, visible))
-        return action
-
-    def _make_action(self, label: str):
-        return QAction(label, self)
-
-    def _layer_visible(self, layer: str) -> bool:
-        items = self.plot_layers.get(layer, [])
-        return bool(items) and all(item.isVisible() for item in items)
-
-    def _set_layer_visible(self, layer: str, visible: bool) -> None:
-        for item in self.plot_layers.get(layer, []):
-            item.setVisible(visible)
-
-    def _set_calculated_visible(self, visible: bool) -> None:
-        self._set_layer_visible("calculated_profile", visible)
-        self._set_layer_visible("total_profile", visible)
-        self._set_layer_visible("phase_profiles", visible)
-        self._set_layer_visible("background", visible)
-        self._set_layer_visible("peak_positions", visible)
-        self._set_layer_visible("phase_ticks", visible)
-        self._set_layer_visible("peak_links", visible)
-        self._set_layer_visible("coverage_markers", visible)
-        self._set_layer_visible("peak_labels", visible)
-        self._set_layer_visible("unknown_peaks", visible)
-        self._set_layer_visible("hkl", visible)
-        self._set_layer_visible("preview_profile", visible)
-        self._set_layer_visible("preview_peak_positions", visible)
-        self._set_layer_visible("preview_peak_links", visible)
-        self._set_layer_visible("preview_hkl", visible)
-
-    def _clear_calculated_overlay(self) -> None:
-        for layer in [
-            "calculated_profile",
-            "total_profile",
-            "phase_profiles",
-            "background",
-            "peak_positions",
-            "phase_ticks",
-            "peak_links",
-            "coverage_markers",
-            "peak_labels",
-            "unknown_peaks",
-            "hkl",
-            "preview_profile",
-            "preview_peak_positions",
-            "preview_peak_links",
-            "preview_hkl",
-            "legend_info",
-        ]:
-            for item in self.plot_layers.get(layer, []):
-                self.match_plot.removeItem(item)
-            self.plot_layers[layer] = []
-        self.active_overlay_entry_id = None
-
-    def _clear_preview_overlay(self) -> None:
-        for layer in ["preview_profile", "preview_peak_positions", "preview_peak_links", "preview_hkl"]:
-            for item in self.plot_layers.get(layer, []):
-                self.match_plot.removeItem(item)
-            self.plot_layers[layer] = []
-
-    def _set_hkl_labels_enabled(self, visible: bool) -> None:
-        self.show_hkl_labels = visible
-        if self.match_candidates:
-            self._recalculate_match_profile()
-            row = self.candidate_table.currentRow()
-            if row >= 0:
-                self._preview_candidate_row(row)
-        elif self.active_overlay_entry_id:
-            row = self.candidate_table.currentRow()
-            if row >= 0:
-                self.active_overlay_entry_id = None
-                self._preview_candidate_row(row)
-
-    def _set_grid_visible(self, visible: bool) -> None:
-        self.grid_visible = visible
-        alpha = 0.25 if visible else 0.0
-        self.match_plot.showGrid(x=True, y=True, alpha=alpha)
-
-    def _set_legend_visible(self, visible: bool) -> None:
-        if visible and self.legend_item is None:
-            self.legend_item = self.match_plot.addLegend()
-        elif not visible and self.legend_item is not None:
-            self.legend_item.scene().removeItem(self.legend_item)
-            self.legend_item = None
-
-    def _add_legend_info(self, text: str) -> None:
-        item = self.match_plot.plot([], [], pen=pg.mkPen("#00000000", width=0.1), name=text)
-        self.plot_layers["legend_info"].append(item)
-
-    def _phase_legend_label(self, candidate: dict[str, str]) -> str:
-        phase = self._candidate_phase_name(candidate) or candidate.get("Entry", "") or "phase"
-        source = self._candidate_source(candidate)
-        entry = candidate.get("Entry", "")
-        if source and entry:
-            return f"{phase} {source}#{entry}"
-        if entry:
-            return f"{phase} #{entry}"
-        return phase
-
-    def _full_pattern_range(self) -> None:
-        self._reset_match_plot_view()
-
-    def _selected_candidate_row(self) -> dict[str, str] | None:
-        return self.candidate_table.selected_row_values()
-
-    def _candidate_row_values(self, row: int) -> dict[str, str]:
-        return self.candidate_table.row_values(row)
-
-    def _candidate_rows(self) -> list[dict[str, str]]:
-        rows = []
-        for candidate in self.candidate_table.all_row_values():
-            if candidate.get("Entry") and self._candidate_source(candidate) in {"COD", "USER", "MP", "CCDC", "AFLOW", "OQMD"}:
-                rows.append(candidate)
-        return rows
-
-    def _preview_candidate_row(self, row: int) -> None:
-        candidate = self._candidate_row_values(row)
-        if self._candidate_source(candidate) == "RRUFF" and candidate.get("Entry"):
-            self._preview_rruff_reference(candidate, show_errors=False)
-            return
-        if self._candidate_source(candidate) == "PDF2" and candidate.get("Entry"):
-            self._preview_pdf2_reference(candidate, show_errors=False)
-            return
-        if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC", "AFLOW", "OQMD"} or not candidate.get("Entry"):
-            return
-        self._with_candidate_cif_ready(
-            candidate,
-            "Preview structure",
-            lambda ready_candidate: self._calculate_candidate_overlay(ready_candidate, show_errors=False),
-        )
-
-    def _candidate_source(self, candidate: dict[str, str]) -> str:
-        return candidate.get("Source", "") or candidate.get("Qual.", "")
-
-    def _candidate_phase_name(self, candidate: dict[str, str]) -> str:
-        return candidate.get("Phase", "") or candidate.get("Candidate phase", "")
-
-    def _candidate_cif_path(self, candidate: dict[str, str]) -> Path:
-        source = self._candidate_source(candidate)
-        entry_id = candidate.get("Entry", "")
-        if source in {"USER", "CCDC"} and entry_id:
-            cached_path = self.local_phase_cache.cif_path(source, entry_id)
-            if cached_path is not None:
-                return cached_path
-            if source == "USER":
-                project_path = self._candidate_local_cif_path(candidate)
-                if project_path is not None:
-                    return project_path
-            raise ValueError("CIF is not in the user phase library. Save or import it first.")
-        if source == "COD" and entry_id:
-            cached_path = self.local_phase_cache.cif_path("COD", entry_id)
-            if cached_path is not None:
-                return cached_path
-            entry = self._candidate_to_cod_entry(candidate)
-            return self.local_phase_cache.download_cod_entry(entry, self.cod_online)
-        if source == "MP" and entry_id:
-            cached_path = self.local_phase_cache.cif_path("MP", entry_id)
-            if cached_path is not None:
-                return cached_path
-            target_dir = self.local_phase_cache.root / "materials_project_cif"
-            cif_path = self.materials_project.download_cif(entry_id, target_dir)
-            self.local_phase_cache.index_cif(cif_path, source="MP", entry_id=entry_id)
-            return cif_path
-        if source == "AFLOW" and entry_id:
-            cached_path = self.local_phase_cache.cif_path("AFLOW", entry_id)
-            if cached_path is not None:
-                return cached_path
-            target_dir = self.local_phase_cache.root / "aflow_cif"
-            cif_path = self.aflow.download_cif(entry_id, target_dir, url_hint=candidate.get("Notes", ""))
-            self.local_phase_cache.index_cif(cif_path, source="AFLOW", entry_id=entry_id)
-            return cif_path
-        if source == "OQMD" and entry_id:
-            cached_path = self.local_phase_cache.cif_path("OQMD", entry_id)
-            if cached_path is not None:
-                return cached_path
-            target_dir = self.local_phase_cache.root / "oqmd_cif"
-            cif_path = self.oqmd.download_cif(entry_id, target_dir, url_hint=candidate.get("Notes", ""), formula_hint=candidate.get("Formula", ""))
-            self.local_phase_cache.index_cif(cif_path, source="OQMD", entry_id=entry_id)
-            return cif_path
-        raise ValueError("Select a saved COD, CCDC, USER, Materials Project, AFLOW, or OQMD row with an entry id.")
-
-    def _candidate_needs_remote_cif(self, candidate: dict[str, str]) -> bool:
-        source = self._candidate_source(candidate)
-        entry_id = candidate.get("Entry", "")
-        return bool(entry_id and source in {"COD", "MP", "AFLOW", "OQMD"} and self.local_phase_cache.cif_path(source, entry_id) is None)
-
-    def _with_candidate_cif_ready(self, candidate: dict[str, str], title: str, on_ready) -> None:
-        if not self._candidate_needs_remote_cif(candidate):
-            on_ready(candidate)
-            return
-        source = self._candidate_source(candidate)
-        entry_id = candidate.get("Entry", "")
-
-        self._run_background_task(
-            title,
-            f"Downloading {source} structure {entry_id}...",
-            lambda: self.candidate_search_service.download_with_priority(
-                (source, entry_id),
-                lambda: self._candidate_cif_path(candidate),
-            ),
-            lambda _path: (self._refresh_database_rows(), on_ready(candidate)),
-            lambda message, _details: QMessageBox.warning(self, f"{title} failed", message),
-        )
-
-    def _candidate_local_cif_path(self, candidate: dict[str, str]) -> Path | None:
-        source = self._candidate_source(candidate)
-        entry_id = candidate.get("Entry", "")
-        if not entry_id:
-            return None
-        if source == "USER":
-            cached_path = self.local_phase_cache.cif_path("USER", entry_id)
-            if cached_path is not None:
-                return cached_path
-            phase = next((item for item in self.project.phases if item.id == entry_id), None)
-            if phase is not None and phase.source_path:
-                path = Path(phase.source_path)
-                if path.exists():
-                    return path
-            for phase in self.project.phases:
-                if Path(phase.source_path or "").stem == entry_id:
-                    path = Path(phase.source_path)
-                    if path.exists():
-                        return path
-            return None
-        if source in {"COD", "CCDC", "MP", "AFLOW", "OQMD"}:
-            return self.local_phase_cache.cif_path(source, entry_id)
-        return None
-
-    def _add_selected_cif_to_project(self) -> None:
-        candidate = self._selected_candidate_row()
-        if candidate is None:
-            QMessageBox.information(self, "Add CIF", "Select a structure source row first.")
-            return
-        def add_ready(ready_candidate) -> None:
-            try:
-                phase, structure = self._add_candidate_to_project(ready_candidate)
-                self.tree.set_project(self.project)
-                self.project_changed.emit()
-                if structure is not None:
-                    self._calculate_structure_overlay(structure)
-                QMessageBox.information(self, "Add CIF", f"Added {phase.name} to project.")
-            except Exception as exc:
-                QMessageBox.warning(self, "Add CIF failed", str(exc))
-
-        self._with_candidate_cif_ready(candidate, "Add CIF", add_ready)
-
-    def _calculate_selected_cif_overlay(self) -> None:
-        candidate = self._selected_candidate_row()
-        if candidate is None:
-            QMessageBox.information(self, "Calculate pattern", "Select a structure source row first.")
-            return
-        if self._candidate_source(candidate) == "RRUFF":
-            self._preview_rruff_reference(candidate, show_errors=True)
-            return
-        if self._candidate_source(candidate) == "PDF2":
-            self._preview_pdf2_reference(candidate, show_errors=True)
-            return
-        self._with_candidate_cif_ready(
-            candidate,
-            "Calculate pattern",
-            lambda ready_candidate: self._calculate_candidate_overlay(ready_candidate, show_errors=True),
-        )
-
-    def _download_selected_candidate_to_cache(self) -> None:
-        candidate = self._selected_candidate_row()
-        if candidate is None:
-            QMessageBox.information(self, "Download CIF", "Select a COD or Materials Project row first.")
-            return
-        source = self._candidate_source(candidate)
-        if source in {"USER", "CCDC"}:
-            QMessageBox.information(self, "Download CIF", "This CIF is already in the user phase library.")
-            return
-        if source not in {"COD", "MP"} or not candidate.get("Entry"):
-            QMessageBox.information(self, "Download CIF", "Only COD online or Materials Project rows can be saved to the user phase library.")
-            return
-        saved_id = candidate.get("Entry", "")
-
-        def success(path) -> None:
-            row = self.candidate_table.currentRow()
-            if row >= 0:
-                self.candidate_table.setItem(row, 0, QTableWidgetItem(source))
-            self._refresh_database_rows()
-            QMessageBox.information(self, "Download CIF", f"Saved {saved_id}:\n{path}")
-
-        self._run_background_task(
-            "Download CIF",
-            f"Downloading {source} structure {saved_id}...",
-            lambda: self.candidate_search_service.download_with_priority(
-                (source, saved_id),
-                lambda: self._candidate_cif_path(candidate),
-            ),
-            success,
-            lambda message, _details: QMessageBox.warning(self, "Download CIF failed", message),
-        )
-
-    def _candidate_to_cod_entry(self, candidate: dict[str, str]) -> object:
-        from xrd_finder.services.cod_online_service import CodEntry
-
-        return CodEntry(
-            cod_id=candidate.get("Entry", ""),
-            formula=candidate.get("Formula", ""),
-            name=self._candidate_phase_name(candidate),
-            spacegroup="",
-            source=candidate.get("Notes", ""),
-        )
-
-    def _candidate_key(self, candidate: dict[str, str]) -> str:
-        return f"{self._candidate_source(candidate)}:{candidate.get('Entry', '')}"
-
-    def _candidate_has_structure(self, candidate: dict[str, str] | None) -> bool:
-        if not candidate:
-            return False
-        return self._candidate_source(candidate) in {"COD", "USER", "MP", "CCDC", "AFLOW", "OQMD"} and bool(candidate.get("Entry"))
-
-    def _add_candidate_to_project(self, candidate: dict[str, str]):
-        cif_path = self._candidate_cif_path(candidate)
-        source_path = str(cif_path)
-        for phase in self.project.phases:
-            if phase.source_path == source_path:
-                structure = next((item for item in self.project.structures if item.id == phase.structure_id), None)
-                return phase, structure
-        phase, structure = create_phase_from_cif(cif_path)
-        phase_name = self._candidate_phase_name(candidate)
-        if phase_name:
-            phase.name = phase_name
-            structure.name = phase_name
-        if not phase.formula and candidate.get("Formula"):
-            phase.formula = candidate["Formula"]
-            structure.formula = candidate["Formula"]
-        self.project.phases.append(phase)
-        self.project.structures.append(structure)
-        self.project.touch()
-        return phase, structure
-
-    def _add_selected_candidate_to_match_list(self) -> None:
-        candidate = self._selected_candidate_row()
-        if candidate is None:
-            QMessageBox.information(self, "Working set", "Select a structure source row first.")
-            return
-        if self._candidate_source(candidate) == "RRUFF":
-            self._preview_rruff_reference(candidate, show_errors=True)
-            QMessageBox.information(
-                self,
-                "RRUFF reference",
-                "RRUFF entries are measured reference patterns. They can be previewed as overlays, but cannot be used as calculated CIF phases.",
-            )
-            return
-        if self._candidate_source(candidate) == "PDF2":
-            self._preview_pdf2_reference(candidate, show_errors=True)
-            QMessageBox.information(
-                self,
-                "PDF-2 reference",
-                "PDF-2 entries are reference cards. They can be previewed as peak overlays, but cannot be used as calculated CIF phases.",
-            )
-            return
-        if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC", "AFLOW", "OQMD"} or not candidate.get("Entry"):
-            QMessageBox.information(self, "Working set", "Only saved COD, CCDC, user, or Materials Project structures can be calculated from CIF for now.")
-            return
-        self._with_candidate_cif_ready(
-            candidate,
-            "Working set",
-            lambda ready_candidate: self._add_candidate_to_match_list(ready_candidate, show_errors=True, recalculate=True),
-        )
-
-    def _add_candidate_to_match_list(
-        self,
-        candidate: dict[str, str],
-        show_errors: bool,
-        recalculate: bool = True,
-    ) -> bool:
-        key = self._candidate_key(candidate)
-        if any(self._candidate_key(item) == key for item in self.match_candidates):
-            if recalculate:
-                self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
-            return True
-        try:
-            cif_path = self._candidate_cif_path(candidate)
-            _phase, structure = create_phase_from_cif(cif_path)
-            phase_name = self._candidate_phase_name(candidate)
-            if phase_name:
-                structure.name = phase_name
-            if not structure.formula and candidate.get("Formula"):
-                structure.formula = candidate["Formula"]
-            self.match_candidates.append(candidate.copy())
-            self.match_structures[key] = structure
-            if recalculate:
-                self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
-            return True
-        except Exception as exc:
-            if show_errors:
-                QMessageBox.warning(self, "Working set failed", str(exc))
-            return False
-
-    def _sync_candidate_rows_to_match_list(self) -> None:
-        candidates = self._candidate_rows()
-        if not candidates:
-            self._clear_match_list()
-            return
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        errors = []
-        try:
-            self.match_candidates.clear()
-            self.match_structures.clear()
-            for candidate in candidates:
-                try:
-                    self._add_candidate_to_match_list(candidate, show_errors=False, recalculate=False)
-                except Exception as exc:
-                    errors.append(str(exc))
-            self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
-        finally:
-            self.unsetCursor()
-        if errors:
-            QMessageBox.warning(self, "Selected phases", "; ".join(errors[:3]))
-
-    def _add_selected_phases_to_xrd(self) -> None:
-        if not self.match_candidates:
-            QMessageBox.information(self, "Add phases", "Add candidates to selected phases first.")
-            return
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        errors = []
-        try:
-            for candidate in self.match_candidates:
-                try:
-                    self._add_candidate_to_project(candidate)
-                except Exception as exc:
-                    errors.append(str(exc))
-            self.project.touch()
-            self.tree.set_project(self.project)
-            self.project_changed.emit()
-        finally:
-            self.unsetCursor()
-        if errors:
-            QMessageBox.warning(self, "Add phases", "; ".join(errors[:3]))
-
-    def _remove_selected_match_candidate(self) -> None:
-        row = self.match_table.currentRow()
-        if row < 0 or row >= len(self.match_candidates):
-            return
-        candidate = self.match_candidates.pop(row)
-        key = self._candidate_key(candidate)
-        self.match_structures.pop(key, None)
-        self.match_scales.pop(key, None)
-        self.match_quantities.pop(key, None)
-        self.match_iic.pop(key, None)
-        self.match_zero_shifts.pop(key, None)
-        self.match_cell_scales.pop(key, None)
-        self.match_alignment_scores.pop(key, None)
-        self._recalculate_match_profile()
-
-    def _change_selected_match_color(self) -> None:
-        row = self.match_table.currentRow()
-        if row < 0 or row >= len(self.match_candidates):
-            return
-        candidate = self.match_candidates[row]
-        current = QColor(self._phase_color(candidate, row))
-        color = QColorDialog.getColor(current, self, "Select phase color")
-        if not color.isValid():
-            return
-        candidate["_Color"] = color.name()
-        self._recalculate_match_profile()
-
-    def _clear_match_list(self) -> None:
-        self.match_candidates.clear()
-        self.match_structures.clear()
-        self.match_scales.clear()
-        self.match_quantities.clear()
-        self.match_iic.clear()
-        self.match_zero_shifts.clear()
-        self.match_cell_scales.clear()
-        self.match_alignment_scores.clear()
-        self._clear_calculated_overlay()
-        self._update_match_table()
+        QMessageBox.information(self, PHASE_FINDER_HELP_TITLE, PHASE_FINDER_HELP_TEXT)
 
     def _recalculate_match_profile(self, auto_zoom: bool = False) -> None:
         if not self.match_candidates:
@@ -2215,24 +801,13 @@ class PhaseFinderWindow(AnalysisWindow):
         if pattern is None:
             self._update_match_table()
             return
-        finder_candidates = []
-        candidate_by_key = {}
-        for candidate in self.match_candidates:
-            try:
-                cif_path = self._candidate_cif_path(candidate)
-            except Exception:
-                continue
-            key = self._candidate_key(candidate)
-            candidate_by_key[key] = candidate
-            finder_candidates.append(
-                FinderCandidateInput(
-                    cif_path=str(cif_path),
-                    entry_id=key,
-                    name=self._candidate_phase_name(candidate) or candidate.get("Entry", ""),
-                    formula=candidate.get("Formula", ""),
-                    source=self._candidate_source(candidate),
-                )
-            )
+        finder_candidates, candidate_by_key = build_finder_candidate_inputs(
+            self.match_candidates,
+            self._candidate_cif_path,
+            self._candidate_key,
+            self._candidate_phase_name,
+            self._candidate_source,
+        )
         if not finder_candidates:
             self._update_match_table()
             return
@@ -2254,119 +829,26 @@ class PhaseFinderWindow(AnalysisWindow):
             self._update_match_table()
             return
 
-        x = np.asarray(result.pattern_x, dtype=float)
-        background = np.asarray(result.background, dtype=float)
-        calculated_total = np.asarray(result.calculated_total, dtype=float)
-        observed_y = np.asarray(result.pattern_y, dtype=float)
-        observed_ymax = float(np.nanmax(result.pattern_y)) if result.pattern_y else 100.0
-        observed_ymin = float(np.nanmin(result.pattern_y)) if result.pattern_y else 0.0
-        active_plot_context = self._active_pattern_plot_context()
-        active_plot_offset = float(active_plot_context.get("offset", 0.0))
-        observed_y_plot = observed_y + active_plot_offset
-        observed_ymax_plot = observed_ymax + active_plot_offset
-        observed_ymin_plot = observed_ymin + active_plot_offset
-        background_plot = background + active_plot_offset
-        calculated_total_plot = calculated_total + active_plot_offset
-        phase_peak_sets: list[tuple[str, str, np.ndarray]] = []
-        phase_assignment_styles: dict[str, tuple[str, str]] = {}
-        self.match_scales.clear()
-        self.match_quantities.clear()
-        self.match_iic.clear()
-        self.match_zero_shifts.clear()
-        self.match_cell_scales.clear()
-        self.match_alignment_scores.clear()
-
-        for index, candidate_result in enumerate(result.candidates):
-            candidate = candidate_by_key.get(candidate_result.entry_id)
-            if candidate is None:
-                continue
-            key = self._candidate_key(candidate)
-            color = self._phase_color(candidate, index)
-            phase_label = self._phase_legend_label(candidate)
-            phase_assignment_styles[str(candidate_result.candidate_key)] = (color, phase_label)
-            profile = np.asarray(candidate_result.profile, dtype=float)
-            self.match_scales[key] = float(candidate_result.scale)
-            self.match_quantities[key] = float(candidate_result.quantity_percent)
-            self.match_iic[key] = self._estimate_candidate_corundum_iic(candidate, x)
-            self.match_zero_shifts[key] = float(result.global_zero_shift)
-            self.match_cell_scales[key] = float(candidate_result.cell_scale)
-            self.match_alignment_scores[key] = (
-                f"{candidate_result.status} {candidate_result.matched_peaks}/{candidate_result.total_peaks}"
-            )
-            contribution_item = plot_profile(
-                self.match_plot,
-                x,
-                background_plot + profile,
-                color,
-                f"phase {phase_label}",
-                width=1.5,
-            )
-            self.plot_layers["phase_profiles"].append(contribution_item)
-            phase_peak_sets.append(
-                (
-                    color,
-                    phase_label,
-                    np.asarray(candidate_result.peak_two_theta, dtype=float),
-                )
-            )
-            tick_peaks = [
-                SimpleNamespace(
-                    two_theta=float(peak_two_theta),
-                    reference_two_theta=float(reference_two_theta),
-                    intensity=float(peak_intensity),
-                )
-                for peak_two_theta, reference_two_theta, peak_intensity in zip(
-                    candidate_result.peak_two_theta,
-                    candidate_result.peak_reference_two_theta
-                    or candidate_result.peak_two_theta,
-                    candidate_result.peak_intensity or [100.0] * len(candidate_result.peak_two_theta),
-                )
-            ]
-            if not self.show_all_selected_patterns:
-                y_span = max(observed_ymax - observed_ymin, observed_ymax, 1.0)
-                lane_height = y_span * 0.038
-                lane_gap = lane_height * 0.85
-                lane_top = min(observed_ymin_plot, float(np.nanpercentile(background_plot, 5))) - y_span * 0.12
-                lane_baseline = lane_top - index * (lane_height + lane_gap)
-                lane_items = plot_phase_marker_lane(
-                    self.match_plot,
-                    tick_peaks,
-                    color,
-                    lane_baseline,
-                    lane_height,
-                    None,
-                    float(np.nanmin(x) + (np.nanmax(x) - np.nanmin(x)) * 0.005),
-                )
-                self.plot_layers["phase_ticks"].extend(lane_items)
-
-        background_item = plot_profile(
-            self.match_plot,
-            x,
-            background_plot,
-            "#9aa0a6",
-            "background",
-            width=1.2,
+        draw_match_profile_result(
+            result=result,
+            candidate_by_key=candidate_by_key,
+            match_plot=self.match_plot,
+            plot_layers=self.plot_layers,
+            show_all_selected_patterns=self.show_all_selected_patterns,
+            active_plot_context=self._active_pattern_plot_context(),
+            phase_color=self._phase_color,
+            phase_legend_label=self._phase_legend_label,
+            candidate_key=self._candidate_key,
+            estimate_candidate_iic=self._estimate_candidate_corundum_iic,
+            profile_fit_quality=self._profile_fit_quality,
+            add_peak_coverage_markers=self._add_peak_coverage_markers,
+            match_scales=self.match_scales,
+            match_quantities=self.match_quantities,
+            match_iic=self.match_iic,
+            match_zero_shifts=self.match_zero_shifts,
+            match_cell_scales=self.match_cell_scales,
+            match_alignment_scores=self.match_alignment_scores,
         )
-        self.plot_layers["background"].append(background_item)
-        fit_quality = self._profile_fit_quality(observed_y, background, calculated_total)
-        explained, total_observed = self._add_peak_coverage_markers(
-            x,
-            observed_y_plot,
-            np.clip(observed_y - background, 0.0, None),
-            phase_peak_sets,
-            getattr(result, "observed_peaks", []),
-            phase_assignment_styles,
-        )
-        sum_item = plot_profile(
-            self.match_plot,
-            x,
-            calculated_total_plot,
-            "#0b8043",
-            f"calculated total | fit {fit_quality:.0f}% | peaks {explained}/{total_observed}",
-            width=1.9,
-        )
-        self.plot_layers["total_profile"].append(sum_item)
-        self.match_plot.setTitle("")
         self._update_match_table()
         if auto_zoom:
             self._reset_match_plot_view()
@@ -2396,33 +878,10 @@ class PhaseFinderWindow(AnalysisWindow):
         return weights
 
     def _observed_peak_positions(self, x, corrected_y) -> np.ndarray:
-        y = np.asarray(corrected_y, dtype=float)
-        if len(y) < 5 or float(np.nanmax(y)) <= 0:
-            return np.array([], dtype=float)
-        prominence = max(float(np.nanmax(y)) * 0.04, float(np.nanstd(y)) * 3.5, 1.0)
-        peak_indices, _properties = find_peaks(y, prominence=prominence, distance=max(5, len(y) // 700))
-        if len(peak_indices) > 80:
-            heights = y[peak_indices]
-            keep = np.argsort(heights)[-80:]
-            peak_indices = peak_indices[keep]
-        return np.sort(np.asarray(x, dtype=float)[peak_indices])
+        return observed_peak_positions(x, corrected_y)
 
     def _observed_peak_records(self, x, corrected_y, limit: int = 24) -> list[tuple[float, float]]:
-        y = np.asarray(corrected_y, dtype=float)
-        x_values = np.asarray(x, dtype=float)
-        if len(y) < 5 or float(np.nanmax(y)) <= 0:
-            return []
-        prominence = max(float(np.nanmax(y)) * 0.025, float(np.nanstd(y)) * 2.5, 1.0)
-        peak_indices, _properties = find_peaks(y, prominence=prominence, distance=max(5, len(y) // 800))
-        if len(peak_indices) == 0:
-            return []
-        records = [
-            (float(x_values[index]), max(float(y[index]), 0.0))
-            for index in peak_indices
-            if np.isfinite(x_values[index]) and np.isfinite(y[index]) and y[index] > 0
-        ]
-        records.sort(key=lambda item: item[1], reverse=True)
-        return records[:limit]
+        return observed_peak_records(x, corrected_y, limit=limit)
 
     def _profile_fit_quality(self, observed_y: np.ndarray, background: np.ndarray, calculated_total: np.ndarray) -> float:
         observed_corrected = np.clip(np.asarray(observed_y, dtype=float) - np.asarray(background, dtype=float), 0.0, None)
@@ -2446,63 +905,18 @@ class PhaseFinderWindow(AnalysisWindow):
         observed_peak_assignments=None,
         phase_assignment_styles: dict[str, tuple[str, str]] | None = None,
     ) -> tuple[int, int]:
-        if observed_peak_assignments:
-            return self._add_assignment_markers(x, observed_y, observed_peak_assignments, phase_assignment_styles or {})
-        if not phase_peak_sets:
-            return 0, 0
-        peak_positions = self._observed_peak_positions(x, corrected_y)
-        if len(peak_positions) == 0:
-            return 0, 0
-        y_span = max(float(np.nanmax(observed_y)) - float(np.nanmin(observed_y)), float(np.nanmax(observed_y)), 1.0)
-        marker_offset = y_span * 0.045
-        marker_cutoff = float(np.nanpercentile(observed_y, 72))
-        unknown_limit = 10
-        unknown_count = 0
-        explained = 0
-        considered_positions = []
-        for obs_x in peak_positions:
-            y_index = int(np.argmin(np.abs(x - obs_x)))
-            if float(observed_y[y_index]) >= float(np.nanpercentile(observed_y, 60)):
-                considered_positions.append(float(obs_x))
-        for obs_x in considered_positions:
-            y_index = int(np.argmin(np.abs(x - obs_x)))
-            marker_y = float(observed_y[y_index]) + marker_offset
-            best_color = ""
-            best_delta = 0.22
-            for color, _label, phase_positions in phase_peak_sets:
-                if len(phase_positions) == 0:
-                    continue
-                delta = float(np.min(np.abs(phase_positions - obs_x)))
-                if delta <= best_delta:
-                    best_delta = delta
-                    best_color = color
-            if best_color:
-                item = pg.ScatterPlotItem(
-                    [float(obs_x)],
-                    [marker_y],
-                    pen=pg.mkPen("#ffffff", width=0.8),
-                    brush=pg.mkBrush(best_color),
-                    size=8,
-                    symbol="o",
-                )
-                self.match_plot.addItem(item)
-                self.plot_layers["coverage_markers"].append(item)
-                explained += 1
-            else:
-                if unknown_count >= unknown_limit or float(observed_y[y_index]) < marker_cutoff:
-                    continue
-                item = pg.ScatterPlotItem(
-                    [float(obs_x)],
-                    [marker_y],
-                    pen=pg.mkPen("#6f6f6f", width=1.0),
-                    brush=pg.mkBrush("#ffffff"),
-                    size=8,
-                    symbol="t",
-                )
-                self.match_plot.addItem(item)
-                self.plot_layers["unknown_peaks"].append(item)
-                unknown_count += 1
-        return explained, int(len(considered_positions))
+        return add_peak_coverage_markers(
+            plot=self.match_plot,
+            plot_layers=self.plot_layers,
+            observed_peak_positions=self._observed_peak_positions,
+            x=x,
+            observed_y=observed_y,
+            corrected_y=corrected_y,
+            phase_peak_sets=phase_peak_sets,
+            observed_peak_assignments=observed_peak_assignments,
+            phase_assignment_styles=phase_assignment_styles,
+            show_hkl_labels=self.show_hkl_labels,
+        )
 
     def _add_assignment_markers(
         self,
@@ -2511,87 +925,24 @@ class PhaseFinderWindow(AnalysisWindow):
         observed_peaks,
         phase_assignment_styles: dict[str, tuple[str, str]],
     ) -> tuple[int, int]:
-        y_span = max(float(np.nanmax(observed_y)) - float(np.nanmin(observed_y)), float(np.nanmax(observed_y)), 1.0)
-        marker_offset = y_span * 0.05
-        unknown_cutoff = float(np.nanpercentile(observed_y, 74))
-        unknown_count = 0
-        explained = 0
-        legend_marker_names: set[str] = set()
-        peak_records = []
-        for observed_peak in observed_peaks:
-            obs_x = float(observed_peak.two_theta)
-            if not np.isfinite(obs_x):
-                continue
-            y_index = int(np.argmin(np.abs(x - obs_x)))
-            peak_records.append((float(observed_y[y_index]), observed_peak, y_index))
-        peak_records = sorted(peak_records, key=lambda item: item[0], reverse=True)[:80]
-        peak_records = sorted(peak_records, key=lambda item: float(item[1].two_theta))
-        for _peak_height, observed_peak, y_index in peak_records:
-            obs_x = float(observed_peak.two_theta)
-            marker_y = float(observed_y[y_index]) + marker_offset
-            assignments = list(getattr(observed_peak, "assignments", []) or [])
-            status = getattr(getattr(observed_peak, "status", ""), "value", getattr(observed_peak, "status", ""))
-            if assignments:
-                explained += 1
-                primary_assignment = self._primary_assignment(assignments)
-                color, _phase_label = phase_assignment_styles.get(
-                    str(getattr(primary_assignment, "candidate_key", "")),
-                    ("#d93025", ""),
-                )
-                item = pg.ScatterPlotItem(
-                    [obs_x],
-                    [marker_y],
-                    pen=pg.mkPen("#ffffff", width=1.0),
-                    brush=pg.mkBrush(color),
-                    size=9,
-                    symbol="d" if status == "overlapping" else "o",
-                )
-                self.match_plot.addItem(item)
-                self.plot_layers["coverage_markers"].append(item)
-                if self.show_hkl_labels:
-                    label = self._assignment_marker_label(assignments)
-                    if label:
-                        text = pg.TextItem(label, color="#111111", anchor=(0.5, 1.05))
-                        font = QFont()
-                        font.setPointSize(8)
-                        font.setWeight(QFont.Weight.DemiBold)
-                        text.setFont(font)
-                        text.setPos(obs_x, marker_y + marker_offset * 0.3)
-                        self.match_plot.addItem(text)
-                        self.plot_layers["peak_labels"].append(text)
-            else:
-                if unknown_count >= 10 or float(observed_y[y_index]) < unknown_cutoff:
-                    continue
-                item = pg.ScatterPlotItem(
-                    [obs_x],
-                    [marker_y],
-                    pen=pg.mkPen("#6f6f6f", width=1.2),
-                    brush=pg.mkBrush("#ffffff"),
-                    size=9,
-                    symbol="t",
-                    name="unknown peak" if "unknown peak" not in legend_marker_names else None,
-                )
-                legend_marker_names.add("unknown peak")
-                self.match_plot.addItem(item)
-                self.plot_layers["unknown_peaks"].append(item)
-                unknown_count += 1
-        return explained, int(len(peak_records))
-
-    def _primary_assignment(self, assignments):
-        return max(
-            assignments,
-            key=lambda assignment: float(getattr(assignment, "intensity_ratio", 0.0)),
+        return add_peak_coverage_markers(
+            plot=self.match_plot,
+            plot_layers=self.plot_layers,
+            observed_peak_positions=self._observed_peak_positions,
+            x=x,
+            observed_y=observed_y,
+            corrected_y=np.zeros_like(observed_y),
+            phase_peak_sets=[],
+            observed_peak_assignments=observed_peaks,
+            phase_assignment_styles=phase_assignment_styles,
+            show_hkl_labels=self.show_hkl_labels,
         )
 
+    def _primary_assignment(self, assignments):
+        return primary_assignment(assignments)
+
     def _assignment_marker_label(self, assignments) -> str:
-        labels = []
-        for assignment in assignments[:2]:
-            hkl = "-".join(str(value) for value in getattr(assignment, "hkl", ()) if value is not None)
-            if hkl:
-                labels.append(f"({hkl})")
-        if len(assignments) > 2 and labels:
-            labels[-1] = labels[-1] + "+"
-        return " / ".join(labels)
+        return assignment_marker_label(assignments)
 
     def _phase_label_prefix(self, phase_name: str) -> str:
         words = [word for word in re.split(r"[^A-Za-z0-9]+", phase_name) if word]
@@ -2628,7 +979,7 @@ class PhaseFinderWindow(AnalysisWindow):
         strong_peaks = sorted(strong_peaks, key=lambda peak: peak.intensity, reverse=True)[:limit]
         for peak in strong_peaks:
             calc_x = float(peak.two_theta)
-            nearest_index = int(np.argmin(np.abs(observed_positions - calc_x)))
+            nearest_index = nearest_peak_index(observed_positions, calc_x)
             obs_x = float(observed_positions[nearest_index])
             delta = obs_x - calc_x
             if abs(delta) > max_delta or abs(delta) < min_delta:
@@ -2647,127 +998,13 @@ class PhaseFinderWindow(AnalysisWindow):
             self.plot_layers[layer].append(line_item)
 
     def _estimate_phase_alignment(self, peaks, observed_positions: np.ndarray, structure) -> PhaseAlignmentEstimate:
-        if len(observed_positions) == 0 or not peaks:
-            return PhaseAlignmentEstimate()
-        strong_peaks = [
-            peak for peak in peaks
-            if getattr(peak, "intensity", 0.0) >= 5.0 and 5.0 <= getattr(peak, "two_theta", 0.0) <= 120.0
-        ]
-        strong_peaks = sorted(strong_peaks, key=lambda peak: peak.intensity, reverse=True)[:35]
-        wavelength = radiation_lines_from_wavelength(
-            getattr(structure, "wavelength", None) or CU_KA1_WAVELENGTH
-        )[0][0]
-        pairs = []
-        for peak in strong_peaks:
-            calc_tt = float(peak.two_theta)
-            nearest_index = int(np.argmin(np.abs(observed_positions - calc_tt)))
-            obs_tt = float(observed_positions[nearest_index])
-            delta = obs_tt - calc_tt
-            if abs(delta) > 0.45:
-                continue
-            pairs.append((peak, obs_tt))
-        total_peaks = len(strong_peaks)
-        if len(pairs) < 3:
-            return PhaseAlignmentEstimate(matched_peaks=len(pairs), total_peaks=total_peaks, status="weak")
-        residuals = []
-        weights = []
-        for peak, obs_tt in pairs:
-            residuals.append(obs_tt - float(peak.two_theta))
-            weights.append(max(float(getattr(peak, "intensity", 1.0)), 1.0))
-        residuals = np.asarray(residuals, dtype=float)
-        weights = np.asarray(weights, dtype=float)
-        best_zero = float(np.average(residuals, weights=weights))
-        centered = residuals - best_zero
-        best_score = float(np.average(np.abs(centered), weights=weights))
-        if not np.isfinite(best_score):
-            return PhaseAlignmentEstimate(matched_peaks=len(pairs), total_peaks=total_peaks, status="weak")
-
-        matched_fraction = len(pairs) / max(total_peaks, 1)
-        if best_score > 0.18 or matched_fraction < 0.18:
-            return PhaseAlignmentEstimate(
-                matched_peaks=len(pairs),
-                total_peaks=total_peaks,
-                score=best_score,
-                status="weak",
-            )
-        status = "good" if best_score <= 0.08 and matched_fraction >= 0.3 else "ok"
-        return PhaseAlignmentEstimate(
-            zero_shift=float(np.clip(best_zero, -0.5, 0.5)),
-            matched_peaks=len(pairs),
-            total_peaks=total_peaks,
-            score=best_score,
-            status=f"{status} shift-only",
-        )
+        return estimate_phase_alignment(peaks, observed_positions, structure)
 
     def _peak_probability_from_alignment(self, alignment: PhaseAlignmentEstimate) -> float:
-        if alignment.total_peaks <= 0:
-            return 0.0
-        matched_fraction = alignment.matched_peaks / max(alignment.total_peaks, 1)
-        residual_penalty = 1.0
-        if alignment.score > 0:
-            residual_penalty = max(0.15, 1.0 - min(alignment.score / 0.45, 1.0))
-        enough_peaks_factor = min(alignment.matched_peaks / 8.0, 1.0)
-        return float(np.clip(100.0 * matched_fraction * residual_penalty * enough_peaks_factor, 0.0, 100.0))
+        return peak_probability_from_alignment(alignment)
 
     def _peak_presence_probability(self, peaks, observed_x: np.ndarray, corrected_y: np.ndarray, structure) -> float:
-        observed_records = self._observed_peak_records(observed_x, corrected_y, limit=24)
-        if not observed_records or not peaks:
-            return 0.0
-        observed_positions = np.asarray([position for position, _height in observed_records], dtype=float)
-        strong_calc = [
-            peak for peak in peaks
-            if getattr(peak, "intensity", 0.0) >= 2.0 and 5.0 <= getattr(peak, "two_theta", 0.0) <= 120.0
-        ]
-        strong_calc = sorted(strong_calc, key=lambda peak: float(getattr(peak, "intensity", 0.0)), reverse=True)[:45]
-        if not strong_calc:
-            return 0.0
-        alignment = self._estimate_phase_alignment(strong_calc, observed_positions, structure)
-        zero_shift = alignment.zero_shift if alignment.matched_peaks >= 3 else 0.0
-        calc_positions = np.asarray([float(peak.two_theta) + zero_shift for peak in strong_calc], dtype=float)
-        calc_intensities = np.asarray([max(float(getattr(peak, "intensity", 0.0)), 1.0) for peak in strong_calc], dtype=float)
-
-        tolerance = 0.42
-        observed_weighted = 0.0
-        observed_total = 0.0
-        observed_matches = 0
-        for obs_position, obs_height in observed_records[:18]:
-            weight = max(obs_height, 1.0) ** 0.65
-            observed_total += weight
-            deltas = np.abs(calc_positions - obs_position)
-            nearest = float(np.min(deltas)) if len(deltas) else 999.0
-            if nearest <= tolerance:
-                quality = max(0.0, 1.0 - nearest / tolerance)
-                observed_weighted += weight * (0.45 + 0.55 * quality)
-                observed_matches += 1
-        observed_coverage = observed_weighted / observed_total if observed_total > 0 else 0.0
-
-        top_count = min(18, len(calc_positions))
-        calc_weighted = 0.0
-        calc_total = 0.0
-        for calc_position, calc_intensity in zip(calc_positions[:top_count], calc_intensities[:top_count]):
-            weight = max(calc_intensity, 1.0) ** 0.55
-            calc_total += weight
-            deltas = np.abs(observed_positions - calc_position)
-            nearest = float(np.min(deltas)) if len(deltas) else 999.0
-            if nearest <= tolerance:
-                quality = max(0.0, 1.0 - nearest / tolerance)
-                calc_weighted += weight * (0.45 + 0.55 * quality)
-        calc_coverage = calc_weighted / calc_total if calc_total > 0 else 0.0
-
-        signature_bonus = min(calc_coverage / 0.45, 1.0) if calc_coverage > 0 else 0.0
-        probability = 100.0 * (0.20 * observed_coverage + 0.68 * calc_coverage + 0.12 * signature_bonus)
-        top_calc_matches = 0
-        for calc_position in calc_positions[:min(8, len(calc_positions))]:
-            deltas = np.abs(observed_positions - calc_position)
-            if len(deltas) and float(np.min(deltas)) <= tolerance:
-                top_calc_matches += 1
-        if top_calc_matches < 1:
-            probability = min(probability, 25.0)
-        elif top_calc_matches < 2:
-            probability = min(probability, 55.0)
-        if alignment.score > 0.22:
-            probability *= max(0.75, 1.0 - min((alignment.score - 0.22) / 0.5, 0.25))
-        return float(np.clip(probability, 0.0, 100.0))
+        return peak_presence_probability(peaks, observed_x, corrected_y, structure)
 
     def _clear_probability_caches(self) -> None:
         self._observed_probability_cache = None
@@ -2911,7 +1148,7 @@ class PhaseFinderWindow(AnalysisWindow):
             return 0.0
 
     def _shift_overlay_peaks(self, peaks, zero_shift: float):
-        return [replace(peak, two_theta=float(peak.two_theta) + zero_shift) for peak in peaks]
+        return shift_overlay_peaks(peaks, zero_shift)
 
     def _estimate_background(self, x, y, degree: int = 10, method: str = "auto") -> np.ndarray:
         return estimate_background(x, y, degree=degree, method=method)
@@ -3038,27 +1275,6 @@ class PhaseFinderWindow(AnalysisWindow):
             sum(max(float(getattr(peak, "raw_intensity", 0.0) or getattr(peak, "intensity", 0.0)), 0.0) for peak in peaks)
         )
 
-    def _update_match_table(self) -> None:
-        rows = []
-        for row, candidate in enumerate(self.match_candidates):
-            key = self._candidate_key(candidate)
-            rows.append([
-                self._phase_color(candidate, row),
-                self._phase_legend_label(candidate),
-                self.match_alignment_scores.get(key, ""),
-                f"{self.match_quantities.get(key, 0.0):.1f}",
-                f"{self.match_iic.get(key, 0.0):.3g}",
-            ])
-        self.match_table.set_rows(rows)
-
-    def _phase_color(self, candidate: dict[str, str], index: int) -> str:
-        palette = ["#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa", "#7b1fa2"]
-        color = candidate.get("_Color", "")
-        if not QColor(color).isValid():
-            color = palette[index % len(palette)]
-            candidate["_Color"] = color
-        return color
-
     def _calculate_candidate_overlay(self, candidate: dict[str, str], show_errors: bool) -> None:
         entry_id = candidate.get("Entry", "")
         view_range = self._plot_view_range()
@@ -3082,22 +1298,15 @@ class PhaseFinderWindow(AnalysisWindow):
                 raise ValueError("RRUFF reference pattern is not indexed or the XY file is missing.")
             data = load_xy(pattern_path)
             observed = self._active_observed_data()
-            y = np.asarray(data[:, 1], dtype=float)
-            if observed is not None and len(observed):
-                observed_max = max(float(np.nanmax(observed[:, 1])), 1.0)
-                y = scale_profile_to_reference(y, observed_max * 0.92)
             self._clear_calculated_overlay()
             label = self._phase_legend_label(candidate)
-            item = plot_profile(
-                self.match_plot,
-                np.asarray(data[:, 0], dtype=float),
-                y,
-                "#1a73e8",
-                f"RRUFF reference {label}",
-                width=1.7,
+            draw_rruff_reference(
+                plot=self.match_plot,
+                plot_layers=self.plot_layers,
+                data=np.asarray(data, dtype=float),
+                observed=observed,
+                label=label,
             )
-            self.plot_layers["calculated_profile"].append(item)
-            self.match_plot.setTitle(f"RRUFF reference overlay: {label}", color="#111111", size="13pt")
             self.active_overlay_entry_id = entry_id
         except Exception as exc:
             if show_errors:
@@ -3113,47 +1322,16 @@ class PhaseFinderWindow(AnalysisWindow):
             if not peaks:
                 raise ValueError("PDF-2 diffraction lines were not found for this card.")
             observed = self._active_observed_data()
-            if observed is not None and len(observed):
-                x_grid = np.asarray(observed[:, 0], dtype=float)
-                active_plot_context = self._active_pattern_plot_context()
-                active_plot_offset = float(active_plot_context.get("offset", 0.0))
-                baseline_value = float(np.nanmin(observed[:, 1])) + active_plot_offset
-                top_value = float(np.nanmax(observed[:, 1])) + active_plot_offset
-                height = max(top_value - baseline_value, float(active_plot_context.get("height", 0.0)), 1.0)
-            else:
-                x_grid = np.linspace(5.0, 120.0, 5000)
-                baseline_value = 0.0
-                height = 100.0
             self._clear_preview_overlay()
-            baseline = np.full_like(x_grid, baseline_value, dtype=float)
             label = self._phase_legend_label(candidate)
-            stick_item = plot_peak_intensity_sticks(
-                self.match_plot,
-                peaks,
-                "#1a73e8",
-                x_grid,
-                baseline,
-                height,
-                f"PDF-2 reference {label}",
-                width=3.0,
-            )
-            self.plot_layers["preview_peak_positions"].append(stick_item)
-            hkl_peaks = [peak for peak in peaks if getattr(peak, "h", "") or getattr(peak, "k", "") or getattr(peak, "l", "")]
-            if self.show_hkl_labels and hkl_peaks:
-                hkl_items = add_hkl_labels(
-                    self.match_plot,
-                    hkl_peaks,
-                    "#1a73e8",
-                    baseline_value,
-                    height,
-                    limit=18,
-                    above_peaks=True,
-                )
-                self.plot_layers["preview_hkl"].extend(hkl_items)
-            self.match_plot.setTitle(
-                f"PDF-2 peak preview for {label} ({len(peaks)} lines)",
-                color="#111111",
-                size="13pt",
+            draw_pdf2_reference(
+                plot=self.match_plot,
+                plot_layers=self.plot_layers,
+                peaks=peaks,
+                observed=observed,
+                active_plot_context=self._active_pattern_plot_context(),
+                label=label,
+                show_hkl_labels=self.show_hkl_labels,
             )
             self._restore_plot_view_range(view_range)
             self.active_overlay_entry_id = entry_id
@@ -3166,753 +1344,28 @@ class PhaseFinderWindow(AnalysisWindow):
             self._clear_preview_overlay()
         else:
             self._clear_calculated_overlay()
-        x_grid = None
-        observed_ymax = None
-        observed_ymin = None
-        observed_peak_positions = np.array([], dtype=float)
-        background = None
-        profile_fwhm = 0.18
         observed = self._active_observed_data()
-        if observed is not None:
-            try:
-                x_grid = observed[:, 0]
-                observed_ymin = float(np.nanmin(observed[:, 1]))
-                observed_ymax = float(np.nanmax(observed[:, 1]))
-                background = self._estimate_background(observed[:, 0], observed[:, 1])
-                corrected = np.clip(observed[:, 1] - background, 0.0, None)
-                observed_peak_positions = self._observed_peak_positions(observed[:, 0], corrected)
-                profile_fwhm = self._estimate_profile_fwhm(observed[:, 0], corrected)
-            except Exception:
-                x_grid = None
-        if x_grid is None:
-            x_grid = np.linspace(5.0, 120.0, 5000)
-        if background is None:
-            background = np.zeros_like(x_grid)
-        x, y, peaks = calculate_profile_for_structure(
-            self.calculated_pattern_service,
-            structure,
-            x_grid,
-            fwhm=profile_fwhm,
+        overlay = prepare_structure_overlay(
+            structure=structure,
+            observed=observed,
+            calculated_pattern_service=self.calculated_pattern_service,
+            estimate_background=self._estimate_background,
+            observed_peak_positions=self._observed_peak_positions,
+            estimate_profile_fwhm=self._estimate_profile_fwhm,
+            estimate_phase_alignment=self._estimate_phase_alignment,
         )
-        alignment = self._estimate_phase_alignment(peaks, observed_peak_positions, structure)
-        peaks = self._shift_overlay_peaks(peaks, alignment.zero_shift)
-        wavelength = getattr(structure, "wavelength", None) or CU_KA1_WAVELENGTH
-        x, y = calculated_profile_from_peaks(peaks, x_grid, fwhm=profile_fwhm, wavelength=wavelength)
-        if observed_ymax is not None:
-            baseline = float(np.nanpercentile(background, 50))
-            y = scale_profile_to_reference(y, max(observed_ymax - baseline, 1.0))
-            if not preview:
-                active_plot_offset = float(self._active_pattern_plot_context().get("offset", 0.0))
-                background_item = plot_profile(
-                    self.match_plot,
-                    x,
-                    background + active_plot_offset,
-                    "#9aa0a6",
-                    "background",
-                    width=0.8,
-                )
-                self.plot_layers["calculated_profile"].append(background_item)
-        else:
-            y = scale_profile_to_reference(y, 100.0)
-        color = "#1a73e8" if preview else "#d93025"
-        active_plot_context = self._active_pattern_plot_context()
-        active_plot_offset = float(active_plot_context.get("offset", 0.0))
-        marker_top = (
-            observed_ymax + active_plot_offset
-            if observed_ymax is not None else float(np.nanmax(y) if np.nanmax(y) > 0 else 100.0)
+        draw_structure_overlay(
+            overlay=overlay,
+            structure=structure,
+            preview=preview,
+            match_plot=self.match_plot,
+            plot_layers=self.plot_layers,
+            active_plot_context=self._active_pattern_plot_context(),
+            show_all_selected_patterns=self.show_all_selected_patterns,
+            show_hkl_labels=self.show_hkl_labels,
+            add_peak_residual_links=self._add_peak_residual_links,
+            observed=observed,
         )
-        marker_bottom = (
-            observed_ymin + active_plot_offset
-            if observed_ymin is not None else float(np.nanmin(background) + active_plot_offset)
-        )
-        y_span = max(marker_top - marker_bottom, float(active_plot_context.get("height", 0.0)), 1.0)
-        if preview:
-            preview_baseline = np.full_like(x_grid, marker_bottom, dtype=float)
-            preview_height = y_span
-            stick_item = plot_peak_intensity_sticks(
-                self.match_plot,
-                peaks,
-                color,
-                x_grid,
-                preview_baseline,
-                preview_height,
-                f"preview peaks {structure.name}",
-                width=3.0,
-            )
-            self.plot_layers["preview_peak_positions"].append(stick_item)
-            if self.show_hkl_labels:
-                hkl_items = add_hkl_labels(
-                    self.match_plot,
-                    peaks,
-                    color,
-                    marker_bottom,
-                    preview_height,
-                    limit=18,
-                    above_peaks=True,
-                )
-                self.plot_layers["preview_hkl"].extend(hkl_items)
-            self.match_plot.setTitle(
-                f"Phase Finder: peak preview for {structure.name} ({len(peaks)} peaks, {alignment.status} {alignment.matched_peaks}/{alignment.total_peaks})",
-                color="#111111",
-                size="13pt",
-            )
-            return
-        if not preview:
-            calc_item = plot_profile(
-                self.match_plot,
-                x,
-                y + background + active_plot_offset,
-                color,
-                f"calculated total {structure.name}",
-                width=1.8,
-            )
-            self.plot_layers["calculated_profile"].append(calc_item)
-        lane_height = y_span * (0.045 if observed is not None else 0.032)
-        lane_baseline = marker_bottom - y_span * (0.13 if observed is not None else 0.18)
-        if not self.show_all_selected_patterns:
-            lane_items = plot_phase_marker_lane(
-                self.match_plot,
-                peaks,
-                color,
-                lane_baseline,
-                lane_height,
-                None,
-                float(np.nanmin(x) + (np.nanmax(x) - np.nanmin(x)) * 0.005),
-            )
-            self.plot_layers["preview_peak_positions" if preview else "peak_positions"].extend(lane_items)
-        if not preview and observed is not None and len(observed_peak_positions):
-            self._add_peak_residual_links(
-                peaks,
-                np.asarray(observed[:, 0], dtype=float),
-                np.asarray(observed[:, 1], dtype=float),
-                observed_peak_positions,
-                max_delta=0.45,
-                limit=36,
-                layer="peak_links",
-            )
-        if self.show_hkl_labels and not self.show_all_selected_patterns:
-            hkl_items = add_hkl_labels(
-                self.match_plot,
-                peaks,
-                color,
-                lane_baseline - lane_height * 0.2,
-                lane_height,
-                limit=18,
-            )
-            self.plot_layers["preview_hkl" if preview else "hkl"].extend(hkl_items)
-        self.match_plot.setTitle(
-            f"Phase Finder: calculated overlay for {structure.name} ({len(peaks)} peaks, FWHM {profile_fwhm:.3g}, {alignment.status} {alignment.matched_peaks}/{alignment.total_peaks})",
-            color="#111111",
-            size="13pt",
-        )
-
-    def _database_tab(self) -> QWidget:
-        mp_status = self.materials_project.status()
-        ccdc_status = self.ccdc.status()
-        rruff_row = self.rruff.status_row()
-        match_pdf2_row = self._match_pdf2_status_row()
-        rows = [
-            self._database_summary_row(self._user_phase_library_status_row()),
-            [
-                "COD online",
-                "Available",
-                "Download CIF files to the user library",
-                "crystallography.net/cod",
-            ],
-            [
-                "COD local/bulk",
-                "Available",
-                "Index a downloaded COD CIF folder or ZIP archive",
-                str(self.local_phase_cache.root),
-            ],
-            self._database_summary_row(rruff_row),
-            match_pdf2_row,
-            [
-                "CCDC / CSD",
-                "Ready" if ccdc_status.configured else "Not configured",
-                ccdc_status.label,
-                "CSD Python API / ccdc.cam.ac.uk",
-            ],
-            [
-                "AFLOW",
-                "Available",
-                self.aflow.status().label,
-                "aflow.org",
-            ],
-            [
-                "OQMD",
-                "Available",
-                self.oqmd.status().label,
-                "oqmd.org",
-            ],
-        ]
-        rows.append(
-            [
-                "Materials Project",
-                "Ready" if mp_status.configured else "Not configured",
-                mp_status.label,
-                "user API key",
-            ]
-        )
-        source_states = {
-            "sources/user_library": bool(self.settings.value("sources/user_library", True, type=bool)),
-            "sources/cod_local": bool(self.settings.value("sources/cod_local", True, type=bool)),
-            "sources/cod_online": bool(self.settings.value("sources/cod_online", True, type=bool)),
-            "sources/rruff": bool(self.settings.value("sources/rruff", False, type=bool)),
-            "sources/match_pdf2": bool(
-                self.settings.value("sources/match_pdf2", self.match_pdf2.is_configured(), type=bool)
-            ),
-            "sources/aflow": bool(self.settings.value("sources/aflow", False, type=bool)),
-            "sources/oqmd": bool(self.settings.value("sources/oqmd", False, type=bool)),
-        }
-        self.database_panel = DatabasePanelWidget(
-            rows,
-            source_states,
-            bool(self.settings.value("materials_project/enabled", False, type=bool)),
-            self._materials_project_status_text(),
-            self.materials_project.api_key,
-        )
-        self.database_panel.sourceToggled.connect(self._set_source_enabled)
-        self.database_panel.materialsProjectToggled.connect(self._set_materials_project_enabled)
-        self.database_panel.saveMaterialsProjectRequested.connect(self._save_materials_project_settings)
-        self.database_panel.rebuildUserIndexRequested.connect(self._build_local_phase_cache_index)
-        self.database_panel.clearUserLibraryRequested.connect(self._clear_user_phase_library)
-        self.database_panel.indexCodFolderRequested.connect(self._index_cod_cif_folder)
-        self.database_panel.indexCodZipRequested.connect(self._index_cod_zip_archive)
-        self.database_panel.downloadCodArchiveRequested.connect(self._download_cod_archive_from_url)
-        self.database_panel.clearCodRequested.connect(self._clear_cod_cache)
-        self.database_panel.updateRruffRequested.connect(self._update_rruff_database)
-        self.database_panel.clearRruffRequested.connect(self._clear_rruff_database)
-        self.database_panel.chooseMatchPdf2FolderRequested.connect(self._choose_match_pdf2_folder)
-        self.database_panel.refreshMatchPdf2Requested.connect(self._refresh_match_pdf2_database)
-        self.database_panel.clearMatchPdf2Requested.connect(self._clear_match_pdf2_database)
-        self.database_panel.clearAflowRequested.connect(self._clear_aflow_cache)
-        self.database_panel.clearOqmdRequested.connect(self._clear_oqmd_cache)
-        self.database_panel.clearMaterialsProjectRequested.connect(self._clear_materials_project_cache)
-        return self.database_panel
-
-    def _show_database_settings_tab(self) -> None:
-        for index in range(self.right_tabs.count()):
-            if self.right_tabs.tabText(index) == "Databases":
-                self.right_tabs.setCurrentIndex(index)
-                return
-
-    def _materials_project_status_text(self) -> str:
-        status = self.materials_project.status()
-        enabled = self.settings.value("materials_project/enabled", False, type=bool)
-        enabled_text = "enabled" if enabled else "disabled"
-        return f"Materials Project: {status.label}; search {enabled_text}."
-
-    def _start_match_pdf2_preload(self) -> None:
-        if not self.match_pdf2.is_configured():
-            return
-        if not self._source_enabled("sources/match_pdf2", True):
-            return
-
-        def preload() -> None:
-            try:
-                self.match_pdf2.refresh()
-            except Exception:
-                pass
-
-        threading.Thread(target=preload, name="xrd-match-pdf2-preload", daemon=True).start()
-
-    def _set_source_enabled(self, setting_key: str, checked: bool) -> None:
-        self.settings.setValue(setting_key, checked)
-        if self.database_panel is not None:
-            self.database_panel.set_source_checked(setting_key, checked)
-        if setting_key == "sources/match_pdf2" and checked:
-            self._start_match_pdf2_preload()
-
-    def _set_materials_project_enabled(self, checked: bool) -> None:
-        self.settings.setValue("materials_project/enabled", checked)
-        if self.database_panel is not None:
-            self.database_panel.set_materials_project_status(self._materials_project_status_text())
-
-    def _save_materials_project_settings(self) -> None:
-        api_key = self.database_panel.api_key() if self.database_panel is not None else ""
-        enabled = self.database_panel.materials_project_enabled() if self.database_panel is not None else False
-        self.settings.setValue("materials_project/api_key", api_key)
-        self.settings.setValue("materials_project/enabled", enabled)
-        self.materials_project = MaterialsProjectService(api_key)
-        self.candidate_search_service.materials_project = self.materials_project
-        if self.database_panel is not None:
-            self.database_panel.set_materials_project_status(self._materials_project_status_text())
-        self._refresh_materials_project_database_row()
-
-    def _refresh_materials_project_database_row(self) -> None:
-        if self.database_panel is None:
-            return
-        status = self.materials_project.status()
-        self.database_panel.update_row(
-            "Materials Project",
-            [
-                "Materials Project",
-                "Ready" if status.configured else "Not configured",
-                status.label,
-                "user API key",
-            ],
-        )
-
-    def _refresh_database_rows(self) -> None:
-        if self.database_panel is None:
-            return
-        replacements = {
-            "User phase library": self._database_summary_row(self._user_phase_library_status_row()),
-            "RRUFF powder": self._database_summary_row(self.rruff.status_row()),
-            "PDF-2": self._match_pdf2_status_row(),
-        }
-        for source_name, values in replacements.items():
-            self.database_panel.update_row(source_name, values)
-        self._refresh_materials_project_database_row()
-
-    def _user_phase_library_status_row(self) -> list[str]:
-        local_row = self.local_phase_cache.status_row()
-        return [
-            "User phase library",
-            local_row[1],
-            local_row[2],
-            local_row[3],
-            local_row[4],
-            "sqlite+cif",
-            local_row[6],
-        ]
-
-    def _database_summary_row(self, row: list[str]) -> list[str]:
-        source = row[0] if len(row) > 0 else ""
-        state = row[1] if len(row) > 1 else ""
-        label = row[2] if len(row) > 2 else ""
-        files = row[3] if len(row) > 3 else ""
-        size = row[4] if len(row) > 4 else ""
-        location = row[6] if len(row) > 6 else (row[3] if len(row) > 3 else "")
-        details = label
-        if files or size:
-            suffix = ", ".join(part for part in [f"{files} files" if files else "", f"{size} MB" if size else ""] if part)
-            details = f"{label} ({suffix})" if label else suffix
-        return [source, state, details, location]
-
-    def _match_pdf2_status_row(self) -> list[str]:
-        status = self.match_pdf2.status()
-        return [
-            "PDF-2",
-            "Ready" if status.configured else "Not configured",
-            status.label,
-            str(status.root),
-        ]
-
-    def _build_local_phase_cache_index(self) -> None:
-        def success(result) -> None:
-            count = int(result or 0)
-            self._refresh_database_rows()
-            QMessageBox.information(self, "Build local index", f"Indexed {count} saved CIF files.")
-
-        self._run_background_task(
-            "Build local index",
-            "Indexing saved CIF files...",
-            self.local_phase_cache.build_index,
-            success,
-            lambda message, _details: QMessageBox.warning(self, "Build local index failed", message),
-        )
-
-    def _confirm_clear_database(self, title: str, database_name: str) -> bool:
-        response = QMessageBox.warning(
-            self,
-            title,
-            f"This will permanently delete local data for {database_name}.\n\nThis cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        return response == QMessageBox.StandardButton.Yes
-
-    def _clear_user_phase_library(self) -> None:
-        if not self._confirm_clear_database("Clear user phase library", "the user phase library"):
-            return
-        try:
-            self.local_phase_cache.clear_user_library()
-            self.settings.setValue("sources/user_library", False)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/user_library", False)
-        except Exception as exc:
-            QMessageBox.warning(self, "Clear user phase library failed", str(exc))
-            return
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear user phase library", "User phase library cache was cleared.")
-
-    def _index_cod_cif_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select COD CIF folder", str(Path.home()))
-        if not folder:
-            return
-
-        def success(result) -> None:
-            count = int(result or 0)
-            self._refresh_database_rows()
-            QMessageBox.information(self, "Index COD folder", f"Indexed {count} COD CIF files.")
-
-        self._run_background_task(
-            "Index COD folder",
-            "Indexing COD CIF folder...",
-            lambda: self.local_phase_cache.index_cif_folder(folder, source="COD"),
-            success,
-            lambda message, _details: QMessageBox.warning(self, "Index COD folder failed", message),
-        )
-
-    def _index_cod_zip_archive(self) -> None:
-        archive_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "Select COD ZIP archive",
-            str(Path.home()),
-            "ZIP archive (*.zip);;All files (*.*)",
-        )
-        if not archive_path:
-            return
-        archive = Path(archive_path)
-        target_root = self.local_phase_cache.root / "cod_bulk_cif"
-
-        def success(result) -> None:
-            count = int(result or 0)
-            self._refresh_database_rows()
-            QMessageBox.information(self, "Index COD ZIP", f"Indexed {count} COD CIF files.")
-
-        self._run_background_task(
-            "Index COD ZIP",
-            "Extracting and indexing COD CIF archive...",
-            lambda: self._extract_and_index_cif_zip(archive, target_root, source="COD"),
-            success,
-            lambda message, _details: QMessageBox.warning(self, "Index COD ZIP failed", message),
-        )
-
-    def _download_cod_archive_from_url(self) -> None:
-        url, ok = QInputDialog.getText(
-            self,
-            "Download COD archive",
-            "COD ZIP archive URL:",
-        )
-        if not ok or not url.strip():
-            return
-        url = url.strip()
-        output_dir = self.local_phase_cache.root / "downloads"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / Path(url.rstrip("/")).name
-        if output_path.suffix.lower() != ".zip":
-            output_path = output_path.with_suffix(".zip")
-
-        def task() -> Path:
-            with open_url(url, timeout=300) as response:
-                with output_path.open("wb") as handle:
-                    shutil.copyfileobj(response, handle)
-            return output_path
-
-        self._run_background_task(
-            "Download COD archive",
-            "Downloading COD ZIP archive...",
-            task,
-            lambda path: QMessageBox.information(self, "Download COD archive", f"Saved archive:\n{path}"),
-            lambda message, _details: QMessageBox.warning(self, "Download COD archive failed", message),
-        )
-
-    def _clear_cod_cache(self) -> None:
-        if not self._confirm_clear_database("Clear COD local/bulk", "COD local/bulk"):
-            return
-        try:
-            self.local_phase_cache.clear_cod_cache()
-            self.settings.setValue("sources/cod_local", False)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/cod_local", False)
-        except Exception as exc:
-            QMessageBox.warning(self, "Clear COD local/bulk failed", str(exc))
-            return
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear COD local/bulk", "COD local cache was cleared.")
-
-    def _extract_and_index_cif_zip(self, archive_path: Path, target_root: Path, source: str) -> int:
-        target_root.mkdir(parents=True, exist_ok=True)
-        count = 0
-        with ZipFile(archive_path) as archive:
-            for member in archive.infolist():
-                if member.is_dir():
-                    continue
-                member_path = Path(member.filename)
-                if member_path.is_absolute() or ".." in member_path.parts:
-                    continue
-                if member_path.suffix.lower() != ".cif":
-                    continue
-                target_path = target_root / member_path
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(member) as source_handle, target_path.open("wb") as target_handle:
-                    shutil.copyfileobj(source_handle, target_handle)
-                self.local_phase_cache.index_cif(target_path, source=source, entry_id=target_path.stem)
-                count += 1
-        return count
-
-    def _update_rruff_database(self) -> None:
-        def task() -> int:
-            return self.rruff.update_powder_database(RRUFF_POWDER_XY_PROCESSED_URL, remove_archive=True)
-
-        def success(result) -> None:
-            count = int(result or 0)
-            self.settings.setValue("sources/rruff", True)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/rruff", True)
-            self._refresh_database_rows()
-            QMessageBox.information(self, "Update RRUFF", f"Updated and indexed {count} RRUFF reference patterns.")
-
-        self._run_background_task(
-            "Update RRUFF",
-            "Downloading and indexing RRUFF powder patterns...",
-            task,
-            success,
-            lambda message, _details: QMessageBox.warning(self, "Update RRUFF failed", message),
-        )
-
-    def _clear_rruff_database(self) -> None:
-        if not self._confirm_clear_database("Clear RRUFF", "RRUFF"):
-            return
-        try:
-            self.rruff.clear()
-            self.settings.setValue("sources/rruff", False)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/rruff", False)
-        except Exception as exc:
-            QMessageBox.warning(self, "Clear RRUFF failed", str(exc))
-            return
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear RRUFF", "RRUFF local data was cleared and disabled for search.")
-
-    def _choose_match_pdf2_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            "Select PDF-2 folder",
-            str(self.match_pdf2.root if self.match_pdf2.root.exists() else Path.home()),
-        )
-        if not folder:
-            return
-        selected_root = Path(folder)
-        if not (selected_root / "summary.dat").exists():
-            QMessageBox.warning(
-                self,
-                "Select PDF-2 folder",
-                "The selected folder does not contain summary.dat.\n\nSelect a PDF-2 folder that contains summary.dat.",
-            )
-            return
-        self.match_pdf2.set_root(selected_root)
-        self.settings.setValue("match_pdf2/root", str(selected_root))
-        self.settings.setValue("sources/match_pdf2", True)
-        if self.database_panel is not None:
-            self.database_panel.set_source_checked("sources/match_pdf2", True)
-        self._refresh_database_rows()
-        self._start_match_pdf2_preload()
-        QMessageBox.information(self, "Select PDF-2 folder", f"PDF-2 library selected:\n{selected_root}")
-
-    def _refresh_match_pdf2_database(self) -> None:
-        if not self.match_pdf2.is_configured():
-            QMessageBox.warning(
-                self,
-                "Refresh PDF-2 failed",
-                "PDF-2 is not configured. Choose the folder that contains summary.dat first.",
-            )
-            return
-        self.setCursor(Qt.CursorShape.WaitCursor)
-        try:
-            count = self.match_pdf2.refresh()
-            self.settings.setValue("sources/match_pdf2", True)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/match_pdf2", True)
-        except Exception as exc:
-            QMessageBox.warning(self, "Refresh PDF-2 failed", str(exc))
-            return
-        finally:
-            self.unsetCursor()
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Refresh PDF-2", f"Loaded {count} PDF-2 cards.")
-
-    def _clear_match_pdf2_database(self) -> None:
-        response = QMessageBox.warning(
-            self,
-            "Clear PDF-2",
-            "This will clear the loaded PDF-2 card cache and disable it for search.\n\n"
-            "The installed Match files in Program Files will not be deleted.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if response != QMessageBox.StandardButton.Yes:
-            return
-        self.match_pdf2.clear()
-        self.settings.setValue("sources/match_pdf2", False)
-        if self.database_panel is not None:
-            self.database_panel.set_source_checked("sources/match_pdf2", False)
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear PDF-2", "PDF-2 was cleared from memory and disabled for search.")
-
-    def _clear_aflow_cache(self) -> None:
-        if not self._confirm_clear_database("Clear AFLOW", "AFLOW cached structures"):
-            return
-        try:
-            self.local_phase_cache.clear_aflow_cache()
-            self.settings.setValue("sources/aflow", False)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/aflow", False)
-        except Exception as exc:
-            QMessageBox.warning(self, "Clear AFLOW failed", str(exc))
-            return
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear AFLOW", "AFLOW local cache was cleared and disabled for search.")
-
-    def _clear_oqmd_cache(self) -> None:
-        if not self._confirm_clear_database("Clear OQMD", "OQMD cached structures"):
-            return
-        try:
-            self.local_phase_cache.clear_oqmd_cache()
-            self.settings.setValue("sources/oqmd", False)
-            if self.database_panel is not None:
-                self.database_panel.set_source_checked("sources/oqmd", False)
-        except Exception as exc:
-            QMessageBox.warning(self, "Clear OQMD failed", str(exc))
-            return
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear OQMD", "OQMD local cache was cleared and disabled for search.")
-
-    def _clear_materials_project_cache(self) -> None:
-        if not self._confirm_clear_database("Clear Materials Project", "Materials Project cached structures"):
-            return
-        try:
-            self.local_phase_cache.clear_materials_project_cache()
-            self.settings.setValue("materials_project/enabled", False)
-            if self.database_panel is not None:
-                self.database_panel.set_materials_project_checked(False)
-                self.database_panel.set_materials_project_status(self._materials_project_status_text())
-        except Exception as exc:
-            QMessageBox.warning(self, "Clear Materials Project failed", str(exc))
-            return
-        self._refresh_database_rows()
-        QMessageBox.information(self, "Clear Materials Project", "Materials Project local cache was cleared.")
-
-    def _search_pdf2_text(self) -> None:
-        query = self.search_input.text().strip() if self.search_input is not None else ""
-        if not query and self.name_input is not None:
-            query = self.name_input.text().strip()
-        if not query and self.formula_sum_input is not None:
-            query = self.formula_sum_input.text().strip()
-        if not query:
-            self._set_candidate_rows([["", "", "", "Enter a phase name, formula, DOI, or entry ID", "", ""]])
-            return
-        options = self._candidate_search_options()
-
-        def success(result) -> None:
-            rows = result or []
-            if rows:
-                self._set_candidate_rows(rows)
-            else:
-                self._set_candidate_rows([["", "", "", f"No entries found in the selected phase databases for: {query}", "", ""]])
-
-        self._run_background_task(
-            "Find candidates",
-            f"Searching phase databases for {query}...",
-            lambda: self.candidate_search_service.search_text(query, options),
-            success,
-        )
-
-    def _search_from_controls(self) -> None:
-        ccdc_query = self.ccdc_doi_input.text().strip() if self.ccdc_doi_input is not None else ""
-        if ccdc_query:
-            if self.search_input is not None:
-                self.search_input.setText(ccdc_query)
-            self._search_pdf2_text()
-            return
-        if not self.selected_elements:
-            self._search_pdf2_text()
-            return
-        elements = list(self.selected_element_order)
-        options = self._candidate_search_options()
-        search_label = self.formula_sum_input.text().strip() if self.formula_sum_input is not None else " ".join(elements)
-
-        def success(result) -> None:
-            rows = result or []
-            if self.search_input is not None and self.formula_sum_input is not None:
-                self.search_input.setText(self.formula_sum_input.text().strip())
-            if not rows:
-                self._set_candidate_rows([["", "", "", "No entries found for the selected elements", "", ""]])
-                return
-            self._set_candidate_rows(rows)
-
-        self._run_background_task(
-            "Find candidates",
-            f"Searching phase databases for {search_label}...",
-            lambda: self.candidate_search_service.search_elements(elements, options),
-            success,
-        )
-
-    def _candidate_search_options(self) -> CandidateSearchOptions:
-        return CandidateSearchOptions(
-            local_sources=self._local_cache_sources(),
-            excluded_elements=self._excluded_elements(),
-            cod_online_enabled=self._cod_online_enabled(),
-            rruff_enabled=self._rruff_enabled(),
-            match_pdf2_enabled=self._match_pdf2_enabled(),
-            materials_project_enabled=self._materials_project_enabled(),
-            aflow_enabled=self._aflow_enabled(),
-            oqmd_enabled=self._oqmd_enabled(),
-            structural_data_enabled=self._structural_data_enabled(),
-            reference_patterns_enabled=self._reference_patterns_enabled(),
-            material_class_allowed=self._material_class_allowed,
-        )
-
-    def _materials_project_enabled(self) -> bool:
-        return (
-            self._structural_data_enabled()
-            and bool(self.settings.value("materials_project/enabled", False, type=bool))
-            and self.materials_project.status().configured
-        )
-
-    def _local_cache_sources(self) -> list[str]:
-        sources = []
-        if self._source_enabled("sources/user_library", True):
-            sources.extend(["USER", "CCDC", "COD"])
-        if self._source_enabled("sources/cod_local", True):
-            sources.append("COD")
-        if self._materials_project_enabled():
-            sources.append("MP")
-        if self._aflow_enabled():
-            sources.append("AFLOW")
-        if self._oqmd_enabled():
-            sources.append("OQMD")
-        return list(dict.fromkeys(sources))
-
-    def _aflow_enabled(self) -> bool:
-        return self._structural_data_enabled() and self._source_enabled("sources/aflow", False)
-
-    def _oqmd_enabled(self) -> bool:
-        return self._structural_data_enabled() and self._source_enabled("sources/oqmd", False)
-
-    def _cod_online_enabled(self) -> bool:
-        return self._structural_data_enabled() and self._source_enabled("sources/cod_online", True)
-
-    def _rruff_enabled(self) -> bool:
-        return self._reference_patterns_enabled() and self._source_enabled("sources/rruff", False)
-
-    def _match_pdf2_enabled(self) -> bool:
-        return self._source_enabled("sources/match_pdf2", self.match_pdf2.is_configured()) and self.match_pdf2.is_configured()
-
-    def _structural_data_enabled(self) -> bool:
-        return self.structural_data_checkbox is None or self.structural_data_checkbox.isChecked()
-
-    def _reference_patterns_enabled(self) -> bool:
-        return self.reference_patterns_checkbox is None or self.reference_patterns_checkbox.isChecked()
-
-    def _source_enabled(self, setting_key: str, default: bool) -> bool:
-        return bool(self.settings.value(setting_key, default, type=bool))
-
-    def _material_class_allowed(self, formula: str) -> bool:
-        if self.inorganics_checkbox is None or self.organics_checkbox is None:
-            return True
-        allow_inorganic = self.inorganics_checkbox.isChecked()
-        allow_organic = self.organics_checkbox.isChecked()
-        if allow_inorganic and allow_organic:
-            return True
-        if not allow_inorganic and not allow_organic:
-            return False
-        elements = formula_elements(formula)
-        is_organic = {"C", "H"}.issubset(elements)
-        return (is_organic and allow_organic) or ((not is_organic) and allow_inorganic)
 
     def _apply_default_phase_filter(self) -> None:
         self.exclude_all_other_elements = True
@@ -4080,181 +1533,3 @@ class PhaseFinderWindow(AnalysisWindow):
             layout.addWidget(checkbox)
         layout.addStretch(1)
         return widget
-
-
-class RefinementWindow(AnalysisWindow):
-    def __init__(self, project: Project) -> None:
-        super().__init__(project, "Refinement: Le Bail / Rietveld")
-
-        plot = self._plot_widget("Refinement workspace: observed / calculated / difference / HKL")
-        plot.setLabel("bottom", "2theta")
-        plot.setLabel("left", "Intensity")
-        pattern = self._active_pattern()
-        if pattern is not None:
-            try:
-                data = load_xy(pattern.source_path)
-                plot.plot(data[:, 0], data[:, 1], pen=pg.mkPen("#202124", width=1.0), name="Observed")
-            except Exception:
-                pass
-
-        rows = [
-            ["Mode", "Le Bail / Rietveld"],
-            ["Patterns in project", str(len(project.patterns))],
-            ["Phases in project", str(len(project.phases))],
-            ["Refinements in project", str(len(project.refinements))],
-        ]
-        self.center_layout.addWidget(plot, 4)
-        self.center_layout.addWidget(self._table(["Parameter", "Value"], rows), 1)
-
-        self.right_tabs.addTab(self._workflow_tab(), "Main")
-        self.right_tabs.addTab(self._layer_tab(), "View")
-        self.right_tabs.addTab(self._settings_tab(), "Settings")
-
-    def _workflow_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        mode = QComboBox()
-        mode.addItems(["Le Bail", "Rietveld"])
-        layout.addWidget(QLabel("Refinement mode"))
-        layout.addWidget(mode)
-        for label in ["Select pattern", "Select phases", "Background", "Profile", "Cell", "Atoms"]:
-            layout.addWidget(QPushButton(label))
-        layout.addStretch(1)
-        return widget
-
-    def _layer_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        for label in ["Observed", "Calculated", "Difference", "Phase contributions", "HKL ticks"]:
-            checkbox = QCheckBox(label)
-            checkbox.setChecked(True)
-            layout.addWidget(checkbox)
-        layout.addStretch(1)
-        return widget
-
-    def _settings_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QFormLayout(widget)
-        wavelength = QComboBox()
-        wavelength.addItems(["Cu-Ka", "Co-Ka", "Mo-Ka", "Custom"])
-        profile = QComboBox()
-        profile.addItems(["Pseudo-Voigt", "Thompson-Cox-Hastings", "Gaussian"])
-        layout.addRow("Wavelength", wavelength)
-        layout.addRow("Profile", profile)
-        return widget
-
-
-class StructureWindow(AnalysisWindow):
-    def __init__(self, project: Project) -> None:
-        super().__init__(project, "Structure analysis")
-
-        toolbar = QToolBar()
-        for label in ["a", "b", "c", "a*", "b*", "c*", "Rotate", "Move", "Zoom", "Export"]:
-            toolbar.addAction(label)
-
-        viewport = QLabel("Structure viewport\n\nVESTA-like view for original and refined structures")
-        viewport.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        viewport.setStyleSheet("background: white; border: 1px solid #cfd3d7; font-size: 24px;")
-
-        rows = [[structure.name, structure.origin, structure.source_path] for structure in project.structures]
-        if not rows:
-            rows = [["No structures yet", "", "import CIF or run refinement later"]]
-
-        self.center_layout.addWidget(toolbar)
-        self.center_layout.addWidget(viewport, 4)
-        self.center_layout.addWidget(self._table(["Structure", "Origin", "Source"], rows), 1)
-
-        self.right_tabs.addTab(self._tools_tab(), "Tools")
-        self.right_tabs.addTab(self._style_tab(), "Style")
-        self.right_tabs.addTab(self._objects_tab(), "Objects")
-
-    def _tools_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        for label in ["Show models", "Only asymmetric unit", "Unit cell", "Bonds", "Polyhedra", "Labels"]:
-            layout.addWidget(QCheckBox(label))
-        layout.addWidget(QPushButton("Boundary"))
-        layout.addWidget(QPushButton("Orientation"))
-        layout.addStretch(1)
-        return widget
-
-    def _style_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        for label in ["Ball-and-stick", "Space-filling", "Polyhedral", "Wireframe", "Stick"]:
-            layout.addWidget(QCheckBox(label))
-        layout.addStretch(1)
-        return widget
-
-    def _objects_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        for item in self.project.structures:
-            checkbox = QCheckBox(item.name)
-            checkbox.setChecked(True)
-            layout.addWidget(checkbox)
-        layout.addStretch(1)
-        return widget
-
-
-class ThermalWindow(AnalysisWindow):
-    def __init__(self, project: Project) -> None:
-        super().__init__(project, "Thermal / composition analysis")
-
-        plot = self._plot_widget("Thermal analysis: parameters, fits, alpha")
-        plot.setLabel("bottom", "T or x")
-        plot.setLabel("left", "Parameter / alpha")
-
-        rows = [
-            ["T / x", "a", "b", "c", "V", "alpha11", "alpha33", "alphaV"],
-            ["", "", "", "", "", "", "", ""],
-        ]
-        self.center_layout.addWidget(plot, 4)
-        self.center_layout.addWidget(
-            self._table(["Variable", "a", "b", "c", "V", "alpha11", "alpha33", "alphaV"], rows[1:]),
-            1,
-        )
-
-        self.right_tabs.addTab(self._main_tab(), "Main")
-        self.right_tabs.addTab(self._view_tab(), "View")
-        self.right_tabs.addTab(self._settings_tab(), "Settings")
-
-    def _main_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.addWidget(QPushButton("Build series from refinements"))
-        layout.addWidget(QPushButton("Paste table"))
-        layout.addWidget(QPushButton("Calculate alpha"))
-        layout.addWidget(QPushButton("Export figure/table"))
-        layout.addStretch(1)
-        return widget
-
-    def _view_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        for label in ["a", "b", "c", "V", "alpha11", "alpha22", "alpha33", "alphaV", "Fit", "Residuals"]:
-            checkbox = QCheckBox(label)
-            checkbox.setChecked(label in {"a", "c", "V", "Fit"})
-            layout.addWidget(checkbox)
-        layout.addStretch(1)
-        return widget
-
-    def _settings_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QFormLayout(widget)
-        degree = QComboBox()
-        degree.addItems(["1", "2", "3", "4", "5"])
-        variable = QComboBox()
-        variable.addItems(["Temperature", "Composition", "Pressure", "Time"])
-        layout.addRow("Variable", variable)
-        layout.addRow("Polynomial degree", degree)
-        return widget
-
-
-
-
-
-
-
-
-

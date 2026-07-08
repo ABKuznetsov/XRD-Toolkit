@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html as html_lib
 from dataclasses import dataclass
@@ -359,5 +359,4 @@ class CcdcService:
 
     def _create_ssl_context(self):
         return create_ssl_context()
-
 

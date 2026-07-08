@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -12,6 +12,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+BACKGROUND_METHOD_LABELS = {
+    "auto": "arPLS",
+    "arpls": "arPLS",
+    "asls": "AsLS",
+    "snip": "SNIP",
+    "rolling_ball": "rolling ball",
+}
+
+
+def background_method_label(method: str, degree: int | None = None) -> str:
+    if method == "polynomial":
+        return f"polynomial {degree}" if degree is not None else "polynomial"
+    return BACKGROUND_METHOD_LABELS.get(method, method)
 
 
 class _OddWindowMixin:
@@ -43,15 +58,36 @@ class _SliderRow(QWidget):
         layout.addWidget(self.slider, 1)
         layout.addWidget(self.value_label)
         self._update_label(value)
+        self._apply_enabled_style(True)
 
     def value(self) -> int:
         return int(self.slider.value())
 
     def set_value(self, value: int) -> None:
-        self.slider.setValue(int(value))
+        value = int(value)
+        self.slider.setValue(value)
+        self._update_label(value)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        super().setEnabled(enabled)
+        self.slider.setEnabled(enabled)
+        self.value_label.setEnabled(enabled)
+        self._apply_enabled_style(enabled)
 
     def _update_label(self, value: int) -> None:
         self.value_label.setText(f"{int(value)}{self._suffix}")
+
+    def _apply_enabled_style(self, enabled: bool) -> None:
+        if enabled:
+            self.slider.setStyleSheet("")
+            self.value_label.setStyleSheet("")
+            return
+        self.slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 5px; background: #343a42; border-radius: 2px; }"
+            "QSlider::handle:horizontal { width: 15px; margin: -5px 0; border-radius: 7px; background: #59616b; }"
+            "QSlider::tick:horizontal { background: #454c55; width: 1px; }"
+        )
+        self.value_label.setStyleSheet("color: #6f7782;")
 
 
 class SmoothPanel(QWidget, _OddWindowMixin):
@@ -61,7 +97,7 @@ class SmoothPanel(QWidget, _OddWindowMixin):
 
     def __init__(self, default_window: int, parent=None) -> None:
         super().__init__(parent)
-        self._default_window = min(self._odd(default_window), 21)
+        self._default_window = min(self._odd(default_window), 11)
         self.setObjectName("preprocessingPanel")
         self.setMinimumWidth(460)
 
@@ -108,7 +144,7 @@ class SmoothPanel(QWidget, _OddWindowMixin):
         button_row.addWidget(cancel_button)
         button_row.addWidget(ok_button)
 
-        hint = QLabel("Preview updates when you release a slider. Use small windows to preserve sharp XRD peaks.")
+        hint = QLabel("Auto uses a conservative Savitzky-Golay window. Use small windows to preserve sharp XRD peaks.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9aa4af;")
 
@@ -119,20 +155,31 @@ class SmoothPanel(QWidget, _OddWindowMixin):
         layout.addLayout(form)
         layout.addWidget(hint)
         layout.addLayout(button_row)
-        self._method_changed()
+        self._method_changed(emit_preview=False)
 
-    def _method_changed(self) -> None:
+    def _method_changed(self, *_args, emit_preview: bool = True) -> None:
         method = self.method()
         self._polyorder.setEnabled(method == "savgol")
         self._strength.setEnabled(method == "gaussian")
-        self.previewRequested.emit()
+        if emit_preview:
+            self.previewRequested.emit()
 
     def apply_auto(self) -> None:
+        blockers = [
+            QSignalBlocker(self._method),
+            QSignalBlocker(self._window.slider),
+            QSignalBlocker(self._polyorder),
+            QSignalBlocker(self._strength.slider),
+            QSignalBlocker(self._passes),
+        ]
         self._method.setCurrentIndex(0)
         self._window.set_value(self._default_window)
         self._polyorder.setCurrentIndex(0)
         self._strength.set_value(2)
         self._passes.setCurrentIndex(0)
+        for blocker in blockers:
+            blocker.unblock()
+        self._method_changed(emit_preview=False)
         self.previewRequested.emit()
 
     def method(self) -> str:
@@ -163,7 +210,10 @@ class BackgroundRemovalPanel(QWidget):
         self.setMinimumWidth(460)
 
         self._method = QComboBox()
-        self._method.addItem("Auto envelope", "auto")
+        self._method.addItem("Auto (arPLS)", "auto")
+        self._method.addItem("AsLS", "asls")
+        self._method.addItem("SNIP", "snip")
+        self._method.addItem("Rolling ball", "rolling_ball")
         self._method.addItem("Polynomial", "polynomial")
         self._method.addItem("Constant floor", "constant")
         self._degree = _SliderRow(2, 30, self._default_degree)
@@ -193,7 +243,7 @@ class BackgroundRemovalPanel(QWidget):
         button_row.addWidget(cancel_button)
         button_row.addWidget(ok_button)
 
-        hint = QLabel("Polynomial fitting can help when the envelope removes too much broad-peak intensity; constant floor is conservative.")
+        hint = QLabel("Auto uses pybaselines arPLS when available. Polynomial and constant floor are conservative fallbacks.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9aa4af;")
 
@@ -204,18 +254,27 @@ class BackgroundRemovalPanel(QWidget):
         layout.addLayout(form)
         layout.addWidget(hint)
         layout.addLayout(button_row)
-        self._method_changed()
+        self._method_changed(emit_preview=False)
 
-    def _method_changed(self) -> None:
+    def _method_changed(self, *_args, emit_preview: bool = True) -> None:
         method = self.method()
         self._degree.setEnabled(method == "polynomial")
         self._floor.setEnabled(method == "constant")
-        self.previewRequested.emit()
+        if emit_preview:
+            self.previewRequested.emit()
 
     def apply_auto(self) -> None:
+        blockers = [
+            QSignalBlocker(self._method),
+            QSignalBlocker(self._degree.slider),
+            QSignalBlocker(self._floor.slider),
+        ]
         self._method.setCurrentIndex(0)
         self._degree.set_value(self._default_degree)
         self._floor.set_value(15)
+        for blocker in blockers:
+            blocker.unblock()
+        self._method_changed(emit_preview=False)
         self.previewRequested.emit()
 
     def method(self) -> str:

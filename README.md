@@ -32,10 +32,12 @@ The developers of XRD Phase Finder **do not distribute closed, proprietary or li
 
 XRD Phase Finder also builds on the open-source Python scientific stack, including:
 
-- pymatgen
-- NumPy, SciPy and pandas
-- matplotlib
+- NumPy and SciPy
+- pybaselines
+- pyqtgraph
 - PySide6 / Qt
+- gemmi
+- pymatgen, when optional Materials Project workflows are installed
 
 Large third-party databases are **not bundled** with this repository or installer. XRD Phase Finder uses official online access, user-provided local folders, user API keys or optional local imports where available.
 
@@ -98,6 +100,7 @@ The Databases tab manages local user libraries, indexed reference data, external
 - Stable zoom while browsing candidates
 - Candidate preview peaks shown directly over the active XRD pattern
 - Persistent selected-phase overlays with editable colors
+- Project files preserve processed XRD curves, selected phases, element filters and Finder view state
 - Optional HKL labels
 - High-resolution plot export
 
@@ -162,6 +165,8 @@ Identify unexplained peaks
   - The highlighted XRD row is the active pattern for search and preview.
   - Checkboxes control what is visible in the plot.
   - Order arrows change plot and legend order.
+- **Projects**
+  - Save project stores imported XRD/CIF order, processed curves, selected phase assignments and Finder UI state.
 - **Plot**
   - Use mouse zoom/pan normally.
   - `Reset view` or right click -> `Show full pattern` returns to the full range.
@@ -199,7 +204,7 @@ Large external crystallographic databases are user-managed. COD, RRUFF, PDF-2, M
 The recommended Windows installation method is the release installer:
 
 ```text
-XRD_Phase_Finder_Setup_1.0.3.exe
+XRD_Phase_Finder_Setup_1.1.0.exe
 ```
 
 Download it from the GitHub Releases page and run it. The installer:
@@ -236,13 +241,68 @@ XRD_Finder\run_finder_cli.bat
 ---
 ## macOS
 
-Run
+Recommended release installer:
+
+```text
+XRD_Phase_Finder_macOS_1.1.0.dmg
+```
+
+Open the DMG and run:
+
+```text
+install_macos.command
+```
+
+This creates or reuses the shared `XRD_Toolkit` Python environment under:
+
+```text
+~/Library/Application Support/XRD_Toolkit
+```
+
+and installs a macOS application bundle:
+
+```text
+/Applications/XRD Phase Finder.app
+```
+
+If `/Applications` is not writable, the installer falls back to:
+
+```text
+~/Applications/XRD Phase Finder.app
+```
+
+The installed app is registered with macOS Launch Services, so it can be
+launched from Applications, Launchpad, Spotlight, or Finder.
+
+The DMG installer copies the application payload to:
+
+```text
+~/Library/Application Support/XRD_Toolkit/app
+```
+
+so the installed `.app` continues to work after the DMG is ejected. The app
+writes startup logs to the shared toolkit folder and performs a quiet
+fast-forward Git update check when launched from a Git checkout.
+
+Preview launch with visible setup/update/startup diagnostics:
+
+```text
+toolkit/launch_xrd_finder_preview.command
+```
+
+Manual GitHub update:
+
+```text
+update_macos.command
+```
+
+Developer/manual setup is still available:
 
 ```text
 setup_env.command
 ```
 
-Launch the application
+Launch the source-checkout application:
 
 ```text
 XRD_Finder/run_finder.command
@@ -258,8 +318,14 @@ If macOS blocks the scripts after copying or syncing the folder, run this once
 from Terminal inside the project directory:
 
 ```bash
-chmod +x setup_env.command XRD_Finder/*.command
+chmod +x install_macos.command update_macos.command setup_env.command toolkit/*.command XRD_Finder/*.command
 xattr -dr com.apple.quarantine .
+```
+
+Build the release DMG on macOS:
+
+```text
+scripts/build_macos_dmg.command
 ```
 
 ---
@@ -436,11 +502,29 @@ XRD_Analysis_Toolkit/
             Source-checkout command-line launchers
 ```
 
-The repository contains source code, documentation, runtime setup scripts and update metadata. Generated Windows installer files such as `XRD_Phase_Finder_Setup_1.0.3.exe` are **not committed to the repository**; they are published separately as GitHub Release assets after testing.
+The repository contains source code, documentation, runtime setup scripts and update metadata. Generated Windows installer files such as `XRD_Phase_Finder_Setup_1.1.0.exe` are **not committed to the repository**; they are published separately as GitHub Release assets after testing.
 
 The root `XRD_Analysis_Toolkit` layout keeps shared toolkit files separate from the `XRD_Finder` application folder. This leaves room for additional XRD-related applications later while preserving a clear application boundary.
 
 Downloaded databases, user libraries, temporary files and local caches are intentionally kept outside Git. The installed Windows application uses the per-user `XRD_Toolkit` location in AppData. Source-checkout users can set `XRD_FINDER_DATA_DIR` to use a custom data/cache location.
+
+Release source archives should be built from a clean Git tree so `.gitattributes` exclusions are applied:
+
+```bash
+python scripts/build_release_archive.py
+```
+
+The script creates `dist/XRD_Phase_Finder_Source_<version>.zip` with Git metadata, bytecode, OS junk, local database caches and legacy XRD Manager scaffolding excluded.
+
+## Profiling Finder performance
+
+Use the standalone profiler before making further hot-path optimizations:
+
+```bash
+python scripts/profile_finder.py --pattern path/to/pattern.xy --cif path/to/cif_folder --limit 100 --repeat 2
+```
+
+The first run captures `cProfile` statistics for `FinderService`; repeat runs reuse the same service instance so CIF-to-HKL cache effects are visible.
 
 ---
 
@@ -491,5 +575,3 @@ Institute geology and mineralogy SB RAS
 
 GitHub:
 https://github.com/ABKuznetsov
-
-

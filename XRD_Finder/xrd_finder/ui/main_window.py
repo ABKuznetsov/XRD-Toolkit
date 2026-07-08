@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 
@@ -12,8 +12,9 @@ from xrd_finder.io.cif_loader import create_phase_from_cif
 from xrd_finder.io.project_io import save_project_manifest
 from xrd_finder.services.local_phase_cache import LocalPhaseCache
 from xrd_finder.services.project_service import ProjectService
-from xrd_finder.ui.analysis_windows import PhaseFinderWindow, RefinementWindow, StructureWindow, ThermalWindow
+from xrd_finder.ui.analysis_windows import PhaseFinderWindow
 from xrd_finder.ui.context_viewer import ContextViewer
+from xrd_finder.ui.legacy_windows import RefinementWindow, StructureWindow, ThermalWindow
 from xrd_finder.ui.project_tree import ProjectTree
 from xrd_finder.ui.right_panel import RightPanel
 
@@ -289,4 +290,3 @@ class MainWindow(QMainWindow):
             window.project_changed.connect(self._refresh_project)
         self.analysis_windows.append(window)
         window.show()
-

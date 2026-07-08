@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 import numpy as np
-import pyqtgraph as pg
 
 from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.project import Project

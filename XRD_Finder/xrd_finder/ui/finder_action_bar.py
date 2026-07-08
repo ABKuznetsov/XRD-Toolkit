@@ -1,17 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSlider, QWidget
 
-
-def _action_button_style(background: str, border: str) -> str:
-    return (
-        "QPushButton {"
-        f"background: {background}; border: 1px solid {border}; color: #ffffff;"
-        "border-radius: 5px; padding: 6px 12px; font-weight: 700;"
-        "}"
-        "QPushButton:pressed { padding-top: 7px; padding-bottom: 5px; }"
-    )
+from xrd_finder.ui.theme import action_button_style
 
 
 class FinderActionBar(QWidget):
@@ -44,22 +36,22 @@ class FinderActionBar(QWidget):
 
         self.smooth_button = QPushButton("Smooth")
         self.smooth_button.setToolTip("Smooth observed XRD curve")
-        self.smooth_button.setStyleSheet(_action_button_style("#2367a5", "#5a9bd8"))
+        self.smooth_button.setStyleSheet(action_button_style("#2367a5", "#5a9bd8"))
         self.smooth_button.clicked.connect(self.smoothRequested)
 
         self.background_button = QPushButton("Remove background")
         self.background_button.setToolTip("Estimate and subtract background")
-        self.background_button.setStyleSheet(_action_button_style("#8a5a16", "#c68a2e"))
+        self.background_button.setStyleSheet(action_button_style("#8a5a16", "#c68a2e"))
         self.background_button.clicked.connect(self.subtractBackgroundRequested)
 
         reset_data_button = QPushButton("Reset data")
         reset_data_button.setToolTip("Restore the original observed pattern")
-        reset_data_button.setStyleSheet(_action_button_style("#6f45a3", "#9972ca"))
+        reset_data_button.setStyleSheet(action_button_style("#6f45a3", "#9972ca"))
         reset_data_button.clicked.connect(self.resetDataRequested)
 
         reset_button = QPushButton("Reset view")
         reset_button.setToolTip("Show the full XRD range and reset plot zoom")
-        reset_button.setStyleSheet(_action_button_style("#5f6368", "#8a8d91"))
+        reset_button.setStyleSheet(action_button_style("#5f6368", "#8a8d91"))
         reset_button.clicked.connect(self.resetViewRequested)
 
         self.pattern_display_mode.addItems(["One", "All selected"])
@@ -102,4 +94,3 @@ class FinderActionBar(QWidget):
 
     def _set_offset_value(self, value: int) -> None:
         self.pattern_offset_value.setText(f"{value}%")
-

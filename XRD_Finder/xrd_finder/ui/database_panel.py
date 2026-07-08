@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from xrd_finder.ui.theme import glass_button_style
+
 
 class DatabasePanelWidget(QWidget):
     sourceToggled = Signal(str, bool)
@@ -290,10 +292,4 @@ class DatabasePanelWidget(QWidget):
             background, border = "#6f45a3", "#9972ca"
         else:
             background, border = "#2367a5", "#5a9bd8"
-        return (
-            "QPushButton {"
-            f"background: {background}; border: 1px solid {border}; color: #ffffff;"
-            "border-radius: 5px; padding: 5px 10px; font-weight: 700;"
-            "}"
-            "QPushButton:disabled { background: #4f5458; border-color: #60666b; color: #c8c8c8; }"
-        )
+        return glass_button_style(background, border, padding="5px 10px", pressed_padding="6px 10px 4px 10px")

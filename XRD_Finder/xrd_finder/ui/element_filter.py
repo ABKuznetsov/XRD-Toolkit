@@ -39,12 +39,15 @@ def actinides() -> list[str]:
     return ["Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr"]
 
 
+_ELEMENT_SORT_ORDER: dict[str, int] | None = None
+
+
 def element_sort_key(symbol: str) -> int:
-    order = [item[0] for item in periodic_table_positions()] + lanthanides() + actinides()
-    try:
-        return order.index(symbol)
-    except ValueError:
-        return len(order)
+    global _ELEMENT_SORT_ORDER
+    if _ELEMENT_SORT_ORDER is None:
+        order = [item[0] for item in periodic_table_positions()] + lanthanides() + actinides()
+        _ELEMENT_SORT_ORDER = {element: index for index, element in enumerate(order)}
+    return _ELEMENT_SORT_ORDER.get(symbol, len(_ELEMENT_SORT_ORDER))
 
 
 def element_state_style(state: str) -> str:
@@ -93,6 +96,8 @@ class ElementFilterButton(QPushButton):
 class PeriodicTableWidget(QWidget):
     leftClicked = Signal(str)
     rightClicked = Signal(str)
+    _GRID_COLUMNS = 19
+    _GRID_ROWS = 11
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -104,6 +109,7 @@ class PeriodicTableWidget(QWidget):
         )
         self._widgets: list[QWidget] = []
         self._buttons: dict[str, ElementFilterButton] = {}
+        self._grid: QGridLayout | None = None
         self._build_ui()
 
     @property
@@ -117,13 +123,35 @@ class PeriodicTableWidget(QWidget):
 
     def set_scale(self, value: str) -> None:
         factor = int(value.removesuffix("%")) / 100
-        width = round(22 * factor)
-        height = round(18 * factor)
-        font_size = max(6, round(7 * factor))
+        self._set_cell_size(round(22 * factor), round(18 * factor))
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._fit_cells_to_area()
+
+    def _fit_cells_to_area(self) -> None:
+        if self._grid is None:
+            return
+        margins = self.layout().contentsMargins()
+        spacing_x = self._grid.horizontalSpacing()
+        spacing_y = self._grid.verticalSpacing()
+        available_width = max(1, self.width() - margins.left() - margins.right() - spacing_x * (self._GRID_COLUMNS - 1))
+        section_gap = 10
+        available_height = max(
+            1,
+            self.height() - margins.top() - margins.bottom() - spacing_y * (self._GRID_ROWS - 1) - section_gap,
+        )
+        width = max(16, available_width // self._GRID_COLUMNS)
+        height = max(14, available_height // self._GRID_ROWS)
+        self._set_cell_size(width, height)
+
+    def _set_cell_size(self, width: int, height: int) -> None:
+        font_size = max(10, min(20, round(min(width * 0.42, height * 0.52))))
         for widget in self._widgets:
             widget.setFixedSize(width, height)
             font = widget.font()
             font.setPointSize(font_size)
+            font.setBold(True)
             widget.setFont(font)
 
     def _build_ui(self) -> None:
@@ -132,9 +160,10 @@ class PeriodicTableWidget(QWidget):
         layout.setSpacing(4)
 
         grid = QGridLayout()
+        self._grid = grid
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(2)
-        grid.setVerticalSpacing(2)
+        grid.setVerticalSpacing(4)
 
         for group in range(1, 19):
             label = self._header_label(str(group))
@@ -149,6 +178,7 @@ class PeriodicTableWidget(QWidget):
         for symbol, period, group in periodic_table_positions():
             self._add_element_button(grid, symbol, period, group)
 
+        grid.setRowMinimumHeight(8, 10)
         lanth_label = self._header_label("L")
         act_label = self._header_label("A")
         self._widgets.extend([lanth_label, act_label])
@@ -162,7 +192,8 @@ class PeriodicTableWidget(QWidget):
             self._add_element_button(grid, symbol, 10, 4 + index)
 
         layout.addLayout(grid)
-        self.setMaximumHeight(230)
+        self.setMinimumHeight(190)
+        self._fit_cells_to_area()
 
     def _header_label(self, text: str) -> QLabel:
         label = QLabel(text)

@@ -10,6 +10,7 @@ import numpy as np
 CU_KA1_WAVELENGTH = 1.54051
 CU_KA2_WAVELENGTH = 1.54433
 CU_KA2_INTENSITY_RATIO = 0.5
+PROFILE_WINDOW_FACTOR = 5.0
 
 CORUNDUM_CIF = """
 data_corundum_reference
@@ -485,7 +486,7 @@ def calculated_profile_from_peaks(
     def add_peak(center: float, intensity: float) -> None:
         if not (x[0] <= center <= x[-1]):
             return
-        half_width = 8.0 * max(fwhm, 1e-6)
+        half_width = PROFILE_WINDOW_FACTOR * max(fwhm, 1e-6)
         left = np.searchsorted(x, center - half_width, side="left")
         right = np.searchsorted(x, center + half_width, side="right")
         if right <= left:

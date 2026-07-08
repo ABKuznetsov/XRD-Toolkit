@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from xrd_finder.core.base import new_id, utc_now
+from xrd_finder.core.finder_state import FinderProjectState
 from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.phase import Phase
 from xrd_finder.core.refinement import RefinementResult
@@ -25,6 +26,7 @@ class Project:
     refinements: list[RefinementResult] = field(default_factory=list)
     analyses: list[AnalysisResult] = field(default_factory=list)
     series: list[SeriesAnalysis] = field(default_factory=list)
+    finder_state: FinderProjectState = field(default_factory=FinderProjectState)
 
     def touch(self) -> None:
         self.updated_at = utc_now()

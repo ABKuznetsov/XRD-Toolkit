@@ -1,3 +1,4 @@
+from xrd_finder.finder.context import CalculationContext
 from xrd_finder.finder.models import (
     FinderCandidateInput,
     FinderCandidateResult,
@@ -7,9 +8,17 @@ from xrd_finder.finder.models import (
     PeakAssignment,
     PeakStatus,
 )
-from xrd_finder.finder.service import FinderService
+
+
+def __getattr__(name: str):
+    if name in {"FinderService", "FinderHeuristics"}:
+        from xrd_finder.finder.service import FinderHeuristics, FinderService
+
+        return {"FinderService": FinderService, "FinderHeuristics": FinderHeuristics}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "CalculationContext",
     "FinderCandidateInput",
     "FinderCandidateResult",
     "FinderInput",
@@ -17,5 +26,6 @@ __all__ = [
     "ObservedPeak",
     "PeakAssignment",
     "PeakStatus",
+    "FinderHeuristics",
     "FinderService",
 ]

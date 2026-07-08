@@ -1,27 +1,53 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.optimize import nnls
-from scipy.signal import find_peaks, peak_widths, savgol_filter
+from scipy.signal import find_peaks
 
+from xrd_finder.finder.assignment_builder import AssignmentBuilder, nearest_index as nearest_peak_index, nearest_phase_peak
+from xrd_finder.finder.context import CalculationContext
 from xrd_finder.finder.models import (
     FinderCandidateInput,
     FinderCandidateResult,
     FinderInput,
     FinderResult,
     ObservedPeak,
-    PeakAssignment,
-    PeakStatus,
 )
-from xrd_finder.io.cif_loader import create_phase_from_cif
-from xrd_finder.io.xy_loader import load_xy
+from xrd_finder.finder.observed_pattern_processor import ObservedPatternProcessor
+from xrd_finder.finder.profile_calculator import CachedProfileCalculator, array_fingerprint
 from xrd_finder.services.calculated_pattern_service import (
     CU_KA1_WAVELENGTH,
     CalculatedPatternService,
     HKLPeak,
-    calculated_profile_from_peaks,
     radiation_lines_from_wavelength,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class FinderHeuristics:
+    trusted_peak_tolerance: float = 0.38
+    zero_outlier_tolerance: float = 0.14
+    zero_consensus_tolerance: float = 0.12
+    trusted_zero_max_residual: float = 0.18
+    zero_consensus_min_residual: float = 0.16
+    zero_consensus_residual_margin: float = 0.08
+    zero_min_matched_fraction: float = 0.18
+    zero_max_residual: float = 0.22
+    trusted_peak_intensity_min: float = 6.0
+    strong_peak_intensity_min: float = 8.0
+    zero_candidate_peak_tolerance: float = 0.4
+    cell_scale_peak_tolerance: float = 0.35
+    cell_scale_min: float = 0.97
+    cell_scale_max: float = 1.03
+    match_tolerance: float = 0.25
+    match_peak_intensity_min: float = 5.0
+    good_score: float = 0.35
+    ok_score: float = 0.18
+    snap_min_delta: float = 0.08
+    snap_max_delta: float = 0.45
+    snap_intensity_min: float = 4.0
 
 
 class FinderService:
@@ -32,61 +58,77 @@ class FinderService:
     translate their state into FinderInput and render FinderResult.
     """
 
-    def __init__(self, calculated_pattern_service: CalculatedPatternService | None = None) -> None:
+    def __init__(
+        self,
+        calculated_pattern_service: CalculatedPatternService | None = None,
+        sticks_cache_limit: int = 256,
+        profile_cache_limit: int = 256,
+        profile_cache_max_bytes: int = 128 * 1024 * 1024,
+        heuristics: FinderHeuristics | None = None,
+    ) -> None:
         self.calculated_pattern_service = calculated_pattern_service or CalculatedPatternService()
+        self.heuristics = heuristics or FinderHeuristics()
+        self.profile_calculator = CachedProfileCalculator(
+            self.calculated_pattern_service,
+            sticks_cache_limit=sticks_cache_limit,
+            profile_cache_limit=profile_cache_limit,
+            profile_cache_max_bytes=profile_cache_max_bytes,
+        )
+        self.assignment_builder = AssignmentBuilder()
+        self.observed_processor = ObservedPatternProcessor()
 
     def run(self, finder_input: FinderInput) -> FinderResult:
-        x_grid, observed_y = self._observed_arrays(finder_input)
-        observed_y = self._smooth_y(observed_y, finder_input.smoothing_window)
-        background = self._estimate_background(observed_y) if finder_input.subtract_background else np.zeros_like(observed_y)
-        target_y = np.clip(observed_y - background, 0.0, None)
+        observed = self.observed_processor.prepare(finder_input)
+        x_grid = observed.x_grid
         wavelength = finder_input.wavelength or CU_KA1_WAVELENGTH
         primary_wavelength = radiation_lines_from_wavelength(wavelength)[0][0]
-        fwhm = finder_input.fwhm or self._estimate_fwhm(x_grid, target_y)
-        observed_peak_items = self._observed_peaks(x_grid, target_y, fwhm)
-        observed_peaks = np.asarray([peak.two_theta for peak in observed_peak_items], dtype=float)
 
         candidate_data = []
+        two_theta_min = finder_input.two_theta_min or float(np.nanmin(x_grid))
+        two_theta_max = finder_input.two_theta_max or float(np.nanmax(x_grid))
+        context = CalculationContext(
+            wavelength=float(wavelength),
+            primary_wavelength=float(primary_wavelength),
+            fwhm=float(observed.fwhm),
+            two_theta_min=float(two_theta_min),
+            two_theta_max=float(two_theta_max),
+            x_grid_fingerprint=array_fingerprint(x_grid),
+        )
         for candidate in finder_input.candidates:
             try:
-                _phase, structure = create_phase_from_cif(candidate.cif_path)
-                two_theta_min = finder_input.two_theta_min or float(np.nanmin(x_grid))
-                two_theta_max = finder_input.two_theta_max or float(np.nanmax(x_grid))
-                peaks = self.calculated_pattern_service.calculate_sticks(
-                    structure,
-                    two_theta_min=two_theta_min,
-                    two_theta_max=two_theta_max,
-                    wavelength=primary_wavelength,
+                peaks = self.profile_calculator.candidate_sticks(
+                    candidate.cif_path,
+                    context=context,
                     use_lp=True,
                 )
             except Exception:
                 continue
             candidate_data.append((candidate, peaks))
 
-        trusted_zero = self._estimate_global_zero_shift_from_trusted_assignments(candidate_data, observed_peak_items)
+        trusted_zero = self._estimate_global_zero_shift_from_trusted_assignments(candidate_data, observed.peaks)
         global_zero = (
             trusted_zero
             if trusted_zero is not None
-            else self._estimate_global_zero_shift(candidate_data, observed_peaks)
+            else self._estimate_global_zero_shift(candidate_data, observed.peak_positions)
         )
         profiles = []
         for candidate, peaks in candidate_data:
-            cell_scale = self._estimate_phase_cell_scale(peaks, observed_peaks, global_zero, primary_wavelength)
-            reference_peaks = self._apply_peak_model(peaks, zero_shift=global_zero, cell_scale=cell_scale, wavelength=primary_wavelength)
+            cell_scale = self._estimate_phase_cell_scale(peaks, observed.peak_positions, global_zero, context.primary_wavelength)
+            phase_context = context.with_alignment(global_zero, cell_scale)
+            reference_peaks = self._apply_peak_model(peaks, phase_context)
             adjusted = (
-                self._snap_peaks_to_observed(reference_peaks, observed_peaks)
+                self._snap_peaks_to_observed(reference_peaks, observed.peak_positions)
                 if finder_input.snap_peak_positions
                 else reference_peaks
             )
-            _x, profile = calculated_profile_from_peaks(
+            profile = self.profile_calculator.profile_from_peaks(
                 adjusted,
                 x_grid,
-                fwhm=fwhm,
-                wavelength=wavelength,
+                context=phase_context,
             )
             profiles.append((candidate, reference_peaks, adjusted, profile, cell_scale))
 
-        scales = self._fit_scales(target_y, [profile for _candidate, _reference_peaks, _peaks, profile, _cell_scale in profiles])
+        scales = self._fit_scales(observed.target_y, [profile for _candidate, _reference_peaks, _peaks, profile, _cell_scale in profiles])
         total_scale = float(np.sum(scales)) if len(scales) else 0.0
         calculated_total = np.zeros_like(x_grid)
         results = []
@@ -94,7 +136,7 @@ class FinderService:
         for (candidate, reference_peaks, peaks, profile, cell_scale), scale in zip(profiles, scales):
             scaled_profile = profile * float(scale)
             calculated_total += scaled_profile
-            matched, total = self._count_matches(peaks, observed_peaks)
+            matched, total = self._count_matches(peaks, observed.peak_positions)
             score = float(matched / max(total, 1))
             candidate_result = FinderCandidateResult(
                 candidate_key=self._candidate_key(candidate),
@@ -119,149 +161,29 @@ class FinderService:
             if float(scale) > 1e-9:
                 assignment_phase_sets.append((candidate_result, peaks))
 
-        assigned_peaks = self._assign_observed_peaks(
-            observed_peak_items,
+        assigned_peaks = self.assignment_builder.assign_observed_peaks(
+            observed.peaks,
             assignment_phase_sets,
-            tolerance=max(0.28, min(0.55, fwhm * 2.8)),
+            tolerance=max(0.28, min(0.55, observed.fwhm * 2.8)),
         )
 
         return FinderResult(
             pattern_x=x_grid.tolist(),
-            pattern_y=observed_y.tolist(),
-            background=background.tolist(),
-            calculated_total=(calculated_total + background).tolist(),
+            pattern_y=observed.observed_y.tolist(),
+            background=observed.background.tolist(),
+            calculated_total=(calculated_total + observed.background).tolist(),
             global_zero_shift=float(global_zero),
-            fwhm=float(fwhm),
+            fwhm=float(observed.fwhm),
             candidates=results,
             observed_peaks=assigned_peaks,
         )
 
-    def _observed_arrays(self, finder_input: FinderInput) -> tuple[np.ndarray, np.ndarray]:
-        if finder_input.observed_x is not None and finder_input.observed_y is not None:
-            x = np.asarray(finder_input.observed_x, dtype=float)
-            y = np.asarray(finder_input.observed_y, dtype=float)
-            if len(x) != len(y) or len(x) == 0:
-                raise ValueError("Observed X/Y arrays must be non-empty and have equal length.")
-            return x, y
-        observed = load_xy(finder_input.pattern_path)
-        return np.asarray(observed[:, 0], dtype=float), np.asarray(observed[:, 1], dtype=float)
-
-    def _smooth_y(self, y: np.ndarray, window: int) -> np.ndarray:
-        if window <= 2 or len(y) < 5:
-            return y
-        window = min(int(window), len(y) - 1 if len(y) % 2 == 0 else len(y))
-        if window % 2 == 0:
-            window -= 1
-        if window < 5:
-            return y
-        try:
-            return np.asarray(savgol_filter(y, window_length=window, polyorder=2, mode="interp"), dtype=float)
-        except Exception:
-            kernel = np.ones(window, dtype=float) / float(window)
-            return np.convolve(y, kernel, mode="same")
-
-    def _estimate_background(self, y: np.ndarray) -> np.ndarray:
-        if len(y) < 5:
-            return np.zeros_like(y)
-        window = max(31, (len(y) // 80) | 1)
-        padded = np.pad(y, (window // 2, window // 2), mode="edge")
-        baseline = np.empty_like(y, dtype=float)
-        for index in range(len(y)):
-            baseline[index] = float(np.nanpercentile(padded[index:index + window], 15))
-        return baseline
-
-    def _estimate_fwhm(self, x: np.ndarray, y: np.ndarray) -> float:
-        if len(x) < 5 or float(np.nanmax(y)) <= 0:
-            return 0.18
-        prominence = max(float(np.nanmax(y)) * 0.08, 1.0)
-        indices, _properties = find_peaks(y, prominence=prominence, distance=max(3, len(y) // 1000))
-        if len(indices) == 0:
-            return 0.18
-        widths = peak_widths(y, indices, rel_height=0.5)[0]
-        step = abs(float(np.nanmedian(np.diff(x)))) if len(x) > 1 else 0.02
-        return float(np.clip(np.nanmedian(widths) * step, 0.05, 0.35))
-
-    def _observed_peak_positions(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        return np.asarray([peak.two_theta for peak in self._observed_peaks(x, y, 0.18)], dtype=float)
-
-    def _observed_peaks(self, x: np.ndarray, y: np.ndarray, fwhm: float) -> list[ObservedPeak]:
-        if len(x) < 5 or float(np.nanmax(y)) <= 0:
-            return []
-        prominence = max(float(np.nanmax(y)) * 0.03, 1.0)
-        indices, _properties = find_peaks(y, prominence=prominence, distance=max(3, len(y) // 1000))
-        if len(indices) > 150:
-            heights = y[indices]
-            indices = indices[np.argsort(heights)[-150:]]
-        ordered = indices[np.argsort(np.asarray(x, dtype=float)[indices])]
-        return [
-            ObservedPeak(
-                two_theta=float(x[index]),
-                intensity=float(y[index]),
-                fwhm=float(fwhm),
-            )
-            for index in ordered
-        ]
-
-    def _assign_observed_peaks(
-        self,
-        observed_peaks: list[ObservedPeak],
-        phase_peak_sets: list[tuple[FinderCandidateResult, list[HKLPeak]]],
-        tolerance: float,
-    ) -> list[ObservedPeak]:
-        assigned = []
-        for observed in observed_peaks:
-            assignments = []
-            for candidate, peaks in phase_peak_sets:
-                nearest = self._nearest_phase_peak(observed.two_theta, peaks, tolerance)
-                if nearest is None:
-                    continue
-                peak, delta = nearest
-                assignments.append(
-                    PeakAssignment(
-                        candidate_key=candidate.candidate_key,
-                        phase_name=candidate.name or candidate.formula or candidate.entry_id,
-                        hkl=(int(peak.h), int(peak.k), int(peak.l)),
-                        calc_two_theta=float(peak.two_theta),
-                        delta_two_theta=float(delta),
-                        intensity_ratio=float(max(peak.intensity, 0.0) / 100.0),
-                    )
-                )
-            if len(assignments) == 0:
-                status = PeakStatus.UNKNOWN
-            elif len(assignments) == 1:
-                status = PeakStatus.MATCHED
-            else:
-                status = PeakStatus.OVERLAPPING
-            assigned.append(
-                ObservedPeak(
-                    two_theta=observed.two_theta,
-                    intensity=observed.intensity,
-                    fwhm=observed.fwhm,
-                    assignments=assignments,
-                    status=status,
-                )
-            )
-        return assigned
-
-    def _nearest_phase_peak(
-        self,
-        observed_two_theta: float,
-        peaks: list[HKLPeak],
-        tolerance: float,
-    ) -> tuple[HKLPeak, float] | None:
-        usable = [peak for peak in peaks if peak.intensity >= 0.8]
-        if not usable:
-            return None
-        deltas = np.asarray([float(observed_two_theta) - float(peak.two_theta) for peak in usable], dtype=float)
-        index = int(np.argmin(np.abs(deltas)))
-        delta = float(deltas[index])
-        if abs(delta) > tolerance:
-            return None
-        return usable[index], delta
+    def cache_info(self) -> dict[str, int]:
+        return self.profile_calculator.cache_info()
 
     def _candidate_key(self, candidate: FinderCandidateInput) -> str:
         if candidate.entry_id:
-            return candidate.entry_id
+            return f"{candidate.source or 'UNKNOWN'}:{candidate.entry_id}"
         if candidate.source and candidate.formula:
             return f"{candidate.source}:{candidate.formula}"
         return candidate.cif_path
@@ -285,8 +207,11 @@ class FinderService:
         consensus = [
             item
             for item in estimates
-            if abs(float(item["zero"]) - float(best["zero"])) <= 0.12
-            and float(item["residual"]) <= max(0.16, float(best["residual"]) + 0.08)
+            if abs(float(item["zero"]) - float(best["zero"])) <= self.heuristics.zero_consensus_tolerance
+            and float(item["residual"]) <= max(
+                self.heuristics.zero_consensus_min_residual,
+                float(best["residual"]) + self.heuristics.zero_consensus_residual_margin,
+            )
         ]
         if not consensus:
             consensus = [best]
@@ -307,11 +232,11 @@ class FinderService:
         for observed in observed_peaks:
             possible = []
             for _candidate, peaks in candidate_data:
-                nearest = self._nearest_phase_peak(observed.two_theta, peaks, tolerance=0.38)
+                nearest = nearest_phase_peak(observed.two_theta, peaks, tolerance=self.heuristics.trusted_peak_tolerance)
                 if nearest is None:
                     continue
                 peak, delta = nearest
-                if peak.intensity < 6.0:
+                if peak.intensity < self.heuristics.trusted_peak_intensity_min:
                     continue
                 possible.append((peak, delta))
             if len(possible) != 1:
@@ -324,19 +249,19 @@ class FinderService:
         deltas_array = np.asarray(deltas, dtype=float)
         weights_array = np.asarray(weights, dtype=float)
         center = float(np.average(deltas_array, weights=weights_array))
-        keep = np.abs(deltas_array - center) <= 0.14
+        keep = np.abs(deltas_array - center) <= self.heuristics.zero_outlier_tolerance
         if np.count_nonzero(keep) >= 3:
             deltas_array = deltas_array[keep]
             weights_array = weights_array[keep]
             center = float(np.average(deltas_array, weights=weights_array))
         residual = float(np.average(np.abs(deltas_array - center), weights=weights_array))
-        if len(deltas_array) < 3 or residual > 0.18:
+        if len(deltas_array) < 3 or residual > self.heuristics.trusted_zero_max_residual:
             return None
         return float(np.clip(center, -0.5, 0.5))
 
     def _candidate_zero_shift_estimate(self, peaks: list[HKLPeak], observed_positions: np.ndarray) -> dict[str, float] | None:
         strong = sorted(
-            [peak for peak in peaks if peak.intensity >= 8.0],
+            [peak for peak in peaks if peak.intensity >= self.heuristics.strong_peak_intensity_min],
             key=lambda peak: peak.intensity,
             reverse=True,
         )[:25]
@@ -345,9 +270,9 @@ class FinderService:
         deltas = []
         weights = []
         for peak in strong:
-            nearest_index = int(np.argmin(np.abs(observed_positions - peak.two_theta)))
-            delta = float(observed_positions[nearest_index] - peak.two_theta)
-            if abs(delta) <= 0.4:
+            index = nearest_peak_index(observed_positions, float(peak.two_theta))
+            delta = float(observed_positions[index] - peak.two_theta)
+            if abs(delta) <= self.heuristics.zero_candidate_peak_tolerance:
                 deltas.append(delta)
                 weights.append(max(float(peak.intensity), 1.0))
         if len(deltas) < 3:
@@ -355,14 +280,18 @@ class FinderService:
         deltas_array = np.asarray(deltas, dtype=float)
         weights_array = np.asarray(weights, dtype=float)
         center = float(np.average(deltas_array, weights=weights_array))
-        keep = np.abs(deltas_array - center) <= 0.14
+        keep = np.abs(deltas_array - center) <= self.heuristics.zero_outlier_tolerance
         if np.count_nonzero(keep) >= 3:
             deltas_array = deltas_array[keep]
             weights_array = weights_array[keep]
             center = float(np.average(deltas_array, weights=weights_array))
         residual = float(np.average(np.abs(deltas_array - center), weights=weights_array))
         matched_fraction = len(deltas_array) / max(len(strong), 1)
-        if len(deltas_array) < 3 or matched_fraction < 0.18 or residual > 0.22:
+        if (
+            len(deltas_array) < 3
+            or matched_fraction < self.heuristics.zero_min_matched_fraction
+            or residual > self.heuristics.zero_max_residual
+        ):
             return None
         quality = (len(deltas_array) * matched_fraction * float(np.nanmean(weights_array))) / (residual + 0.03)
         return {
@@ -398,7 +327,7 @@ class FinderService:
         if len(observed_positions) == 0:
             return 1.0
         strong = sorted(
-            [peak for peak in peaks if peak.intensity >= 8.0 and peak.d > 0],
+            [peak for peak in peaks if peak.intensity >= self.heuristics.strong_peak_intensity_min and peak.d > 0],
             key=lambda peak: peak.intensity,
             reverse=True,
         )[:30]
@@ -409,10 +338,10 @@ class FinderService:
         before_residuals = []
         for peak in strong:
             predicted = float(peak.two_theta) + zero_shift
-            nearest_index = int(np.argmin(np.abs(observed_positions - predicted)))
-            observed_two_theta = float(observed_positions[nearest_index])
+            index = nearest_peak_index(observed_positions, predicted)
+            observed_two_theta = float(observed_positions[index])
             delta = observed_two_theta - predicted
-            if abs(delta) > 0.35:
+            if abs(delta) > self.heuristics.cell_scale_peak_tolerance:
                 continue
             d_observed = self._d_from_two_theta(observed_two_theta - zero_shift, wavelength)
             if d_observed is None:
@@ -430,7 +359,7 @@ class FinderService:
             scales_array = scales_array[keep]
             weights_array = weights_array[keep]
             center = float(np.average(scales_array, weights=weights_array))
-        if not 0.97 <= center <= 1.03:
+        if not self.heuristics.cell_scale_min <= center <= self.heuristics.cell_scale_max:
             return 1.0
         after_residuals = []
         for peak in strong:
@@ -438,9 +367,9 @@ class FinderService:
             if shifted is None:
                 continue
             predicted = shifted + zero_shift
-            nearest_index = int(np.argmin(np.abs(observed_positions - predicted)))
-            delta = float(observed_positions[nearest_index] - predicted)
-            if abs(delta) <= 0.35:
+            index = nearest_peak_index(observed_positions, predicted)
+            delta = float(observed_positions[index] - predicted)
+            if abs(delta) <= self.heuristics.cell_scale_peak_tolerance:
                 after_residuals.append(abs(delta))
         if len(after_residuals) < 4:
             return 1.0
@@ -448,21 +377,21 @@ class FinderService:
         after = float(np.nanmedian(after_residuals))
         if after > before * 0.9:
             return 1.0
-        return float(np.clip(center, 0.97, 1.03))
+        return float(np.clip(center, self.heuristics.cell_scale_min, self.heuristics.cell_scale_max))
 
     def _apply_peak_model(
         self,
         peaks: list[HKLPeak],
-        zero_shift: float,
-        cell_scale: float,
-        wavelength: float,
+        context: CalculationContext,
     ) -> list[HKLPeak]:
+        zero_shift = context.global_zero_shift
+        cell_scale = context.cell_scale
         if abs(cell_scale - 1.0) < 1e-7:
             return self._shift_peaks(peaks, zero_shift)
         adjusted = []
         for peak in peaks:
             d_scaled = float(peak.d) * float(cell_scale)
-            two_theta = self._two_theta_from_d(d_scaled, wavelength)
+            two_theta = self._two_theta_from_d(d_scaled, context.primary_wavelength)
             if two_theta is None:
                 continue
             adjusted.append(
@@ -503,20 +432,17 @@ class FinderService:
         self,
         peaks: list[HKLPeak],
         observed_positions: np.ndarray,
-        min_delta: float = 0.08,
-        max_delta: float = 0.45,
-        intensity_min: float = 4.0,
     ) -> list[HKLPeak]:
         if len(observed_positions) == 0:
             return peaks
         snapped = []
         for peak in peaks:
             two_theta = float(peak.two_theta)
-            if peak.intensity >= intensity_min:
-                nearest_index = int(np.argmin(np.abs(observed_positions - two_theta)))
-                observed_two_theta = float(observed_positions[nearest_index])
+            if peak.intensity >= self.heuristics.snap_intensity_min:
+                index = nearest_peak_index(observed_positions, two_theta)
+                observed_two_theta = float(observed_positions[index])
                 delta = observed_two_theta - two_theta
-                if min_delta <= abs(delta) <= max_delta:
+                if self.heuristics.snap_min_delta <= abs(delta) <= self.heuristics.snap_max_delta:
                     two_theta = observed_two_theta
             snapped.append(
                 HKLPeak(
@@ -574,21 +500,23 @@ class FinderService:
 
     def _count_matches(self, peaks: list[HKLPeak], observed_positions: np.ndarray) -> tuple[int, int]:
         strong = sorted(
-            [peak for peak in peaks if peak.intensity >= 5.0],
+            [peak for peak in peaks if peak.intensity >= self.heuristics.match_peak_intensity_min],
             key=lambda peak: peak.intensity,
             reverse=True,
         )[:30]
         matched = 0
         for peak in strong:
-            if len(observed_positions) and float(np.min(np.abs(observed_positions - peak.two_theta))) <= 0.25:
-                matched += 1
+            if len(observed_positions):
+                index = nearest_peak_index(observed_positions, float(peak.two_theta))
+                if abs(float(observed_positions[index]) - float(peak.two_theta)) <= self.heuristics.match_tolerance:
+                    matched += 1
         return matched, len(strong)
 
     def _status(self, score: float, matched: int, total: int) -> str:
         if matched < 2:
             return "weak"
-        if score >= 0.35:
+        if score >= self.heuristics.good_score:
             return "good"
-        if score >= 0.18:
+        if score >= self.heuristics.ok_score:
             return "ok"
         return "weak"
