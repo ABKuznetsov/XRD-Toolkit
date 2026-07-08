@@ -141,10 +141,9 @@ class PhaseFinderProjectStateActionsMixin:
                 candidate.get("Entry", ""),
                 candidate.get("Formula", ""),
                 candidate.get("Phase", ""),
+                candidate.get("Space group", ""),
                 candidate.get("Match (%)", ""),
                 candidate.get("I/Ic*", ""),
             ]
-            if candidate.get("Notes"):
-                row.append(candidate.get("Notes", ""))
             rows.append(row)
         return rows

@@ -120,7 +120,7 @@ def peak_probability_from_alignment(alignment: PhaseAlignmentEstimate) -> float:
 
 
 def peak_presence_probability(peaks, observed_x: np.ndarray, corrected_y: np.ndarray, structure) -> float:
-    records = observed_peak_records(observed_x, corrected_y, limit=32)
+    records = observed_peak_records(observed_x, corrected_y, limit=24)
     if not records or not peaks:
         return 0.0
     observed_positions = np.asarray([position for position, _height in records], dtype=float)
@@ -129,7 +129,7 @@ def peak_presence_probability(peaks, observed_x: np.ndarray, corrected_y: np.nda
         for peak in peaks
         if getattr(peak, "intensity", 0.0) >= 2.0 and 5.0 <= getattr(peak, "two_theta", 0.0) <= 120.0
     ]
-    strong_calc = sorted(strong_calc, key=lambda peak: float(getattr(peak, "intensity", 0.0)), reverse=True)[:36]
+    strong_calc = sorted(strong_calc, key=lambda peak: float(getattr(peak, "intensity", 0.0)), reverse=True)[:45]
     if not strong_calc:
         return 0.0
     alignment = estimate_phase_alignment(strong_calc, observed_positions, structure)
@@ -137,10 +137,10 @@ def peak_presence_probability(peaks, observed_x: np.ndarray, corrected_y: np.nda
     calc_positions = np.asarray([float(peak.two_theta) + zero_shift for peak in strong_calc], dtype=float)
     calc_intensities = np.asarray([max(float(getattr(peak, "intensity", 0.0)), 1.0) for peak in strong_calc], dtype=float)
 
-    tolerance = 0.45
+    tolerance = 0.42
     observed_weighted = 0.0
     observed_total = 0.0
-    for obs_position, obs_height in records[:24]:
+    for obs_position, obs_height in records[:18]:
         weight = max(obs_height, 1.0) ** 0.65
         observed_total += weight
         nearest = _nearest_delta(calc_positions, obs_position)
@@ -149,7 +149,7 @@ def peak_presence_probability(peaks, observed_x: np.ndarray, corrected_y: np.nda
             observed_weighted += weight * (0.45 + 0.55 * quality)
     observed_coverage = observed_weighted / observed_total if observed_total > 0 else 0.0
 
-    top_count = min(14, len(calc_positions))
+    top_count = min(18, len(calc_positions))
     calc_weighted = 0.0
     calc_total = 0.0
     for calc_position, calc_intensity in zip(calc_positions[:top_count], calc_intensities[:top_count]):
@@ -161,14 +161,10 @@ def peak_presence_probability(peaks, observed_x: np.ndarray, corrected_y: np.nda
             calc_weighted += weight * (0.45 + 0.55 * quality)
     calc_coverage = calc_weighted / calc_total if calc_total > 0 else 0.0
 
-    alignment_probability = peak_probability_from_alignment(alignment) / 100.0
-    matched_factor = min(alignment.matched_peaks / 12.0, 1.0)
-    diagnostic_score = max(calc_coverage, alignment_probability)
-    probability = 100.0 * (
-        0.52 * diagnostic_score
-        + 0.28 * observed_coverage
-        + 0.20 * matched_factor
-    )
+    # Rank mostly by the candidate's own strongest peaks. Observed coverage is only a
+    # weak helper because secondary phases can add many unrelated observed peaks.
+    signature_bonus = min(calc_coverage / 0.45, 1.0) if calc_coverage > 0 else 0.0
+    probability = 100.0 * (0.20 * observed_coverage + 0.68 * calc_coverage + 0.12 * signature_bonus)
     top_calc_matches = 0
     for calc_position in calc_positions[:min(8, len(calc_positions))]:
         if _nearest_delta(observed_positions, calc_position) <= tolerance:
@@ -178,9 +174,8 @@ def peak_presence_probability(peaks, observed_x: np.ndarray, corrected_y: np.nda
     elif top_calc_matches < 2:
         probability = min(probability, 55.0)
     if alignment.score > 0.22:
-        probability *= max(0.85, 1.0 - min((alignment.score - 0.22) / 0.5, 0.15))
+        probability *= max(0.75, 1.0 - min((alignment.score - 0.22) / 0.5, 0.25))
     return float(np.clip(probability, 0.0, 100.0))
-
 
 def _nearest_delta(sorted_values: np.ndarray, value: float) -> float:
     if len(sorted_values) == 0:

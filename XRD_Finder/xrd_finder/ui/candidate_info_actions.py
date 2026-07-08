@@ -125,8 +125,9 @@ class PhaseFinderCandidateInfoActionsMixin:
         for header, value in {
             "Formula": candidate.get("Formula", ""),
             "Phase": candidate.get("Phase", ""),
+            "Sp. gr.": candidate.get("Space group", ""),
             "Match (%)": candidate.get("Match (%)", ""),
-            "I/Ic*": candidate.get("I/Ic*", ""),
+            "I/Ic": candidate.get("I/Ic*", "") or candidate.get("I/Ic", ""),
         }.items():
             column = -1
             for index in range(self.candidate_table.columnCount()):

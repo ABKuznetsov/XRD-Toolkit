@@ -18,7 +18,7 @@ class CandidateTableWidget(QTableWidget):
     contextRequested = Signal(QPoint)
 
     MATCH_HEADER = "Match (%)"
-    HEADERS = ["Source", "Entry", "Formula", "Phase", MATCH_HEADER, "I/Ic*"]
+    HEADERS = ["Source", "Entry", "Formula", "Phase", "Sp. gr.", MATCH_HEADER, "I/Ic"]
 
     def __init__(self, rows: list[list[str]], parent=None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
@@ -57,8 +57,6 @@ class CandidateTableWidget(QTableWidget):
             normalized_row = normalize_row(row)
             for col_index, value in enumerate(normalized_row[: self.columnCount()]):
                 item = QTableWidgetItem(value)
-                if col_index == 0 and len(normalized_row) > 6:
-                    item.setData(Qt.ItemDataRole.UserRole, normalized_row[6])
                 self.setItem(row_index, col_index, item)
         self._resize_columns()
 
@@ -70,12 +68,10 @@ class CandidateTableWidget(QTableWidget):
             header_item = self.horizontalHeaderItem(column)
             header = header_item.text() if header_item is not None else str(column)
             item = self.item(row, column)
-            values[header] = item.text().strip() if item is not None else ""
-        first_item = self.item(row, 0)
-        if first_item is not None:
-            notes = first_item.data(Qt.ItemDataRole.UserRole)
-            if notes:
-                values["Notes"] = str(notes)
+            value = item.text().strip() if item is not None else ""
+            values[header] = value
+            if header == "I/Ic":
+                values["I/Ic*"] = value
         return values
 
     def selected_row_values(self) -> dict[str, str] | None:
@@ -128,22 +124,26 @@ class CandidateTableWidget(QTableWidget):
     def _resize_columns(self) -> None:
         self.resizeColumnsToContents()
         header = self.horizontalHeader()
+        header.setStretchLastSection(False)
         for column in range(self.columnCount()):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
-        self.setColumnWidth(0, max(self.columnWidth(0), 70))
-        self.setColumnWidth(1, max(self.columnWidth(1), 90))
-        self.setColumnWidth(2, max(self.columnWidth(2), 180))
-        self.setColumnWidth(3, max(self.columnWidth(3), 260))
-        self.setColumnWidth(4, max(self.columnWidth(4), 70))
-        self.setColumnWidth(5, max(self.columnWidth(5), 70))
-        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.setColumnWidth(1, min(max(self.columnWidth(1), 90), 170))
+        self.setColumnWidth(2, min(max(self.columnWidth(2), 150), 260))
+        self.setColumnWidth(4, 92)
+        self.setColumnWidth(5, 82)
+        self.setColumnWidth(6, 72)
 
 
 class SelectedCandidatesTableWidget(QTableWidget):
     rowClicked = Signal(int)
     contextRequested = Signal(QPoint)
 
-    HEADERS = ["Color", "Phase", "Peaks", "Quant. (%)", "I/Ic*"]
+    HEADERS = ["Color", "Phase", "Peaks", "Quant. (%)", "I/Ic"]
 
     def __init__(self, parent=None) -> None:
         super().__init__(0, len(self.HEADERS), parent)
@@ -196,11 +196,15 @@ class SelectedCandidatesTableWidget(QTableWidget):
     def _resize_columns(self) -> None:
         self.resizeColumnsToContents()
         header = self.horizontalHeader()
+        header.setStretchLastSection(False)
         for column in range(self.columnCount()):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
-        self.setColumnWidth(0, max(self.columnWidth(0), 80))
-        self.setColumnWidth(1, max(self.columnWidth(1), 260))
-        self.setColumnWidth(2, max(self.columnWidth(2), 100))
-        self.setColumnWidth(3, max(self.columnWidth(3), 90))
-        self.setColumnWidth(4, max(self.columnWidth(4), 70))
-        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(0, 82)
+        self.setColumnWidth(2, 96)
+        self.setColumnWidth(3, 92)
+        self.setColumnWidth(4, 72)

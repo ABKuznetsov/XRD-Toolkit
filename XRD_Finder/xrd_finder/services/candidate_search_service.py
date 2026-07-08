@@ -445,8 +445,9 @@ class CandidateSearchService:
                 entry.entry_id,
                 self.display_formula(entry.formula),
                 entry.name or self.display_formula(entry.formula),
+                getattr(entry, "spacegroup", ""),
                 "",
-                entry.source_text or entry.spacegroup,
+                "",
             ]
             for entry in entries
         ]
@@ -459,7 +460,8 @@ class CandidateSearchService:
                 self.display_formula(entry.formula),
                 entry.name or entry.rruff_id,
                 "",
-                entry.source_text,
+                "",
+                "",
             ]
             for entry in entries
         ]
@@ -471,8 +473,9 @@ class CandidateSearchService:
                 entry.cod_id,
                 self.display_formula(entry.formula),
                 entry.name or entry.mineral or self.display_formula(entry.formula),
+                getattr(entry, "spacegroup", "") or getattr(entry, "source", ""),
                 "",
-                entry.source or entry.spacegroup,
+                "",
             ]
             for entry in entries
         ]
@@ -484,8 +487,9 @@ class CandidateSearchService:
                 entry.material_id,
                 self.display_formula(entry.formula),
                 entry.name or self.display_formula(entry.formula),
+                getattr(entry, "spacegroup", ""),
                 "",
-                " ".join(part for part in [entry.spacegroup, entry.energy_above_hull] if part),
+                "",
             ]
             for entry in entries
         ]
@@ -497,9 +501,9 @@ class CandidateSearchService:
                 entry.entry_id,
                 self.display_formula(entry.formula),
                 entry.name or self.display_formula(entry.formula),
+                getattr(entry, "spacegroup", ""),
                 "",
-                entry.note,
-                entry.url_hint or entry.note,
+                "",
             ]
             for entry in entries
         ]
@@ -512,7 +516,8 @@ class CandidateSearchService:
                 self.display_pdf2_formula(entry.formula),
                 self.display_pdf2_phase(entry),
                 "",
-                "ICDD PDF-2" + (f"; mark {entry.quality}" if entry.quality else ""),
+                "",
+                "",
             ]
             for entry in entries
         ]
@@ -584,10 +589,6 @@ class CandidateSearchService:
 
 
 def normalize_candidate_row(row: list[str]) -> list[str]:
-    if len(row) == 7:
-        return row
-    if len(row) == 6:
-        return [row[0], row[1], row[2], row[3], "", row[4], row[5]]
     if len(row) >= 10:
         return [
             row[1],
@@ -598,6 +599,10 @@ def normalize_candidate_row(row: list[str]) -> list[str]:
             row[8],
             row[9],
         ]
+    if len(row) >= 7:
+        return row[:7]
+    if len(row) == 6:
+        return [row[0], row[1], row[2], row[3], "", row[4], row[5]]
     if len(row) >= 5:
         return ["", "", "", row[4], "", "", ""]
     padded = list(row) + [""] * 7

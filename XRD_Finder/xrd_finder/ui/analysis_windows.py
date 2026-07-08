@@ -1051,7 +1051,7 @@ class PhaseFinderWindow(
             scored_row = list(row)
             probability = self._candidate_row_peak_probability(scored_row, observed_x, corrected)
             if probability > 0:
-                scored_row[4] = f"{probability:.0f}%"
+                scored_row[5] = f"{probability:.0f}%"
             scored_rows.append((probability, index, scored_row))
         for index, row in enumerate(rows[max_ranked_rows:], start=max_ranked_rows):
             scored_rows.append((0.0, index, row))
