@@ -36,15 +36,7 @@ Feature release focused on Phase Finder maintainability, background correction a
 
 ## Data Sources
 
-Open or publicly accessible sources supported or planned in the workflow include COD, Materials Project with the user's API key, AFLOW, OQMD, RRUFF measured patterns and user-provided CIF libraries.
-
-Restricted databases are handled only as user-managed local data. PDF-2, CCDC/CSD and other commercial, institutional or private databases can be used only when the user already has the legal right to access them. The developers do **not** distribute closed or license-controlled databases with the installer.
-
-## Notes
-
-XRD Phase Finder is intended for phase identification and pre-refinement screening. It helps find chemically plausible candidates and compare their strongest calculated or measured peaks against the active pattern; it is not a replacement for full Rietveld refinement.
-
-The application uses the Python scientific stack, including NumPy, SciPy, pybaselines, pyqtgraph, PySide6/Qt, gemmi and pymatgen for Materials Project workflows.
+XRD Phase Finder can work with user CIF libraries, open crystallographic databases and user-provided restricted databases. Supported sources, official links and usage notes are summarized below in [Reference Data Sources](#reference-data-sources).
 
 ---
 
@@ -115,7 +107,7 @@ Latest release assets:
 - macOS: [XRD_Phase_Finder_macOS_1.1.0.zip](https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.0/XRD_Phase_Finder_macOS_1.1.0.zip)
 - All releases: [GitHub Releases](https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases)
 
-Large crystallographic databases are user-managed. COD, RRUFF, PDF-2, Materials Project and CCDC/CSD data are not redistributed with the installer.
+Third-party database access and licensing are summarized in [Reference Data Sources](#reference-data-sources).
 
 ## Requirements
 
@@ -263,25 +255,25 @@ For normal interactive work, importing XRD/CIF files from the application window
 
 # Reference Data Sources
 
-The **Databases** tab controls which data sources participate in phase search. The user decides which sources are active for a particular search and which local libraries should be indexed or cleared. The links below point to the source projects or database providers, where users can review access rules, licenses, citation requirements and terms of use.
+The **Databases** tab controls which data sources participate in phase search. The user decides which sources are active for a particular search and which local libraries should be indexed or cleared. The links below point to the official pages of databases that XRD Phase Finder can use. Users should review access rules, licenses, citation requirements and terms of use on those official pages.
 
 Open or publicly accessible sources:
 
 - User phase library from imported CIF files
-- COD online search ([source and terms](https://www.crystallography.net/cod/))
-- COD local folder/archive indexed by the user ([source and terms](https://www.crystallography.net/cod/))
-- RRUFF measured powder-pattern data ([source and terms](https://rruff.info/))
-- Materials Project search with the user's own API key ([source and terms](https://materialsproject.org/))
-- AFLOW structure services when enabled in the application workflow ([source and terms](https://aflow.org/))
-- OQMD structure services when enabled in the application workflow ([source and terms](https://oqmd.org/))
+- COD online search ([official site](https://www.crystallography.net/cod/))
+- COD local folder/archive indexed by the user ([official site](https://www.crystallography.net/cod/))
+- RRUFF measured powder-pattern data ([official site](https://rruff.info/))
+- Materials Project search with the user's own API key ([official site](https://materialsproject.org/))
+- AFLOW structure services when enabled in the application workflow ([official site](https://aflow.org/))
+- OQMD structure services when enabled in the application workflow ([official site](https://oqmd.org/))
 
 Restricted or license-controlled sources, available only when the user has the right to use them:
 
-- PDF-2 reference-card data from a local user-provided installation or folder ([provider and terms](https://www.icdd.com/pdf-2/))
-- CCDC/CSD data through the user's own CCDC Python API installation and valid license/access rights ([provider and terms](https://www.ccdc.cam.ac.uk/solutions/software/csd/))
+- PDF-2 reference-card data from a local user-provided installation or folder ([official site](https://www.icdd.com/pdf-2/))
+- CCDC/CSD data through the user's own CCDC Python API installation and valid license/access rights ([official site](https://www.ccdc.cam.ac.uk/solutions/software/csd/))
 - other local commercial, institutional or private databases supplied by the user
 
-Large databases are never bundled with the application and are not downloaded automatically. Use the controls in **Databases** to download, index, update or clear local data explicitly.
+Large databases are never bundled with the application. The project does not redistribute third-party crystallographic databases; it provides convenient tools for reading, indexing and searching data that the user is allowed to access. Use the controls in **Databases** to download, index, update or clear local data explicitly where supported.
 
 Common database actions include:
 
@@ -292,10 +284,6 @@ Common database actions include:
 
 RRUFF entries are measured reference patterns. They can be overlaid on the
 experimental pattern, but they are not calculated CIF phase profiles.
-
-PDF-2 entries are local reference cards. The software can read a local
-PDF-2 folder when available, but the PDF-2 database itself is not bundled
-or redistributed.
 
 See [Third-party Data Sources](THIRD_PARTY_DATA_SOURCES.md) for notes on COD,
 Materials Project, RRUFF and restricted CCDC/CSD data usage and attribution.
@@ -406,17 +394,26 @@ The software combines several standard crystallographic approaches:
 - Peak assignment
 - Open crystallographic databases
 
+Core open-source libraries used by the application:
+
+- [NumPy](https://numpy.org/) and [SciPy](https://scipy.org/) for numerical work
+- [pybaselines](https://pybaselines.readthedocs.io/) for background correction algorithms
+- [pyqtgraph](https://www.pyqtgraph.org/) for interactive plotting
+- [PySide6 / Qt for Python](https://doc.qt.io/qtforpython-6/) for the desktop interface
+- [gemmi](https://gemmi.readthedocs.io/) for crystallographic file handling
+- [pymatgen](https://pymatgen.org/) for Materials Project and structure workflows
+
 The current implementation is intended for **initial phase identification** and **visual interpretation** of powder diffraction patterns. It is **not** intended to replace full-profile refinement packages such as GSAS-II, FullProf or TOPAS.
 
 ---
 
 # Current Status
 
-Current development stage: **1.0 stable release**.
+Current development stage: **1.1.0 stable public release**.
 
-The application is ready for practical search-match and visual phase-identification workflows. Quantification, I/Ic and probability values should be treated as interpretive aids rather than a substitute for full-profile refinement.
+The application is ready for practical search-match and visual phase-identification workflows on Windows and macOS. The current release includes the graphical Phase Finder workspace, project save/load, multi-pattern display, CIF-based phase overlays, candidate cards, database management, startup/update preview and packaged installers.
 
-Planned next steps include batch processing, stronger separation of fitting services from the UI layer and expanded automated tests.
+Quantification, I/Ic and match values should be treated as interpretive aids for phase screening. Next development work is focused on improving database connectors, refining candidate scoring, extending automated tests and preparing the algorithm description for publication.
 
 ---
 
