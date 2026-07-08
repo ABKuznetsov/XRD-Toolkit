@@ -15,10 +15,10 @@ class PhaseFinderPlotActionsMixin:
         menu.addAction("Export image...", self._export_plot_image)
         menu.addSeparator()
         menu.addAction("Show full pattern", self._full_pattern_range)
-        cursor_action = menu.addAction("Cursor readout")
+        cursor_action = menu.addAction("Vertical cursor line")
         cursor_action.setCheckable(True)
-        cursor_action.setChecked(getattr(self, "cursor_position_enabled", False))
-        cursor_action.toggled.connect(self._set_cursor_position_enabled)
+        cursor_action.setChecked(getattr(self, "cursor_vertical_line_enabled", False))
+        cursor_action.toggled.connect(self._set_cursor_vertical_line_enabled)
         grid_action = menu.addAction("Grid")
         grid_action.setCheckable(True)
         grid_action.setChecked(self.grid_visible)
@@ -171,12 +171,10 @@ class PhaseFinderPlotActionsMixin:
     def _full_pattern_range(self) -> None:
         self._reset_match_plot_view()
 
-    def _set_cursor_position_enabled(self, enabled: bool) -> None:
-        self.cursor_position_enabled = bool(enabled)
+    def _set_cursor_vertical_line_enabled(self, enabled: bool) -> None:
+        self.cursor_vertical_line_enabled = bool(enabled)
         self._ensure_cursor_position_items()
-        self.cursor_position_line.setVisible(enabled)
-        if not enabled and getattr(self, "cursor_position_status_label", None) is not None:
-            self.cursor_position_status_label.setText("2theta: -    I: -")
+        self.cursor_position_line.setVisible(bool(enabled))
 
     def _ensure_cursor_position_items(self) -> None:
         if getattr(self, "cursor_position_line", None) is None:
@@ -205,5 +203,6 @@ class PhaseFinderPlotActionsMixin:
         two_theta = float(view_pos.x())
         intensity = float(view_pos.y())
         self.cursor_position_line.setPos(two_theta)
+        self.cursor_position_line.setVisible(bool(getattr(self, "cursor_vertical_line_enabled", False)))
         if getattr(self, "cursor_position_status_label", None) is not None:
             self.cursor_position_status_label.setText(f"2theta: {two_theta:.3f} deg    I: {intensity:.3g}")

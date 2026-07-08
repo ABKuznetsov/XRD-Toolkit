@@ -546,6 +546,7 @@ class PhaseFinderWindow(
         self.grid_visible = True
         self.show_hkl_labels = False
         self.cursor_position_enabled = True
+        self.cursor_vertical_line_enabled = False
         self.cursor_position_line = None
         self.cursor_position_proxy = None
         self.cursor_position_status_label: QLabel | None = None
@@ -609,7 +610,7 @@ class PhaseFinderWindow(
         self.legend_item = ensure_right_legend(self.match_plot, clear=True)
         self.match_plot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.match_plot.customContextMenuRequested.connect(self._show_plot_context_menu)
-        self._set_cursor_position_enabled(True)
+        self._ensure_cursor_position_items()
         if project.patterns:
             try:
                 self._refresh_observed_pattern_plot()
