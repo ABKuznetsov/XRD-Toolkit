@@ -175,7 +175,8 @@ class PhaseFinderPlotActionsMixin:
         self.cursor_position_enabled = bool(enabled)
         self._ensure_cursor_position_items()
         self.cursor_position_line.setVisible(enabled)
-        self.cursor_position_label.setVisible(False)
+        if not enabled and getattr(self, "cursor_position_status_label", None) is not None:
+            self.cursor_position_status_label.setText("2theta: -    I: -")
 
     def _ensure_cursor_position_items(self) -> None:
         if getattr(self, "cursor_position_line", None) is None:
@@ -184,16 +185,6 @@ class PhaseFinderPlotActionsMixin:
             self.cursor_position_line.setZValue(5000)
             self.cursor_position_line.setVisible(False)
             self.match_plot.addItem(self.cursor_position_line, ignoreBounds=True)
-        if getattr(self, "cursor_position_label", None) is None:
-            self.cursor_position_label = pg.TextItem(
-                "",
-                color="#111111",
-                fill=pg.mkBrush(255, 255, 255, 225),
-                anchor=(0, 1),
-            )
-            self.cursor_position_label.setZValue(5001)
-            self.cursor_position_label.setVisible(False)
-            self.match_plot.addItem(self.cursor_position_label, ignoreBounds=True)
         if getattr(self, "cursor_position_proxy", None) is None:
             self.cursor_position_proxy = pg.SignalProxy(
                 self.match_plot.scene().sigMouseMoved,
@@ -207,18 +198,12 @@ class PhaseFinderPlotActionsMixin:
         scene_pos = event[0] if isinstance(event, tuple) else event
         view_box = self.match_plot.plotItem.vb
         if not view_box.sceneBoundingRect().contains(scene_pos):
-            if getattr(self, "cursor_position_label", None) is not None:
-                self.cursor_position_label.setVisible(False)
+            if getattr(self, "cursor_position_status_label", None) is not None:
+                self.cursor_position_status_label.setText("2theta: -    I: -")
             return
         view_pos = view_box.mapSceneToView(scene_pos)
         two_theta = float(view_pos.x())
         intensity = float(view_pos.y())
         self.cursor_position_line.setPos(two_theta)
-        (xmin, xmax), (ymin, ymax) = self.match_plot.plotItem.vb.viewRange()
-        x_span = max(float(xmax) - float(xmin), 1.0)
-        y_span = max(float(ymax) - float(ymin), 1.0)
-        label_x = float(xmin) + x_span * 0.012
-        label_y = float(ymin) + y_span * 0.045
-        self.cursor_position_label.setText(f"2theta: {two_theta:.3f} deg    I: {intensity:.3g}")
-        self.cursor_position_label.setPos(label_x, label_y)
-        self.cursor_position_label.setVisible(True)
+        if getattr(self, "cursor_position_status_label", None) is not None:
+            self.cursor_position_status_label.setText(f"2theta: {two_theta:.3f} deg    I: {intensity:.3g}")

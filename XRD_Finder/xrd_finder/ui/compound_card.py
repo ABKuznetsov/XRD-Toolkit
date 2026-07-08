@@ -123,16 +123,13 @@ class CompoundCardWidget(QWidget):
         )
 
         self.atom_table = self._table(["Site", "El", "x", "y", "z", "Occ.", "B"], stretch_columns={0, 6})
-        self.atom_table.setMinimumHeight(170)
-        self.atom_table.setMaximumHeight(310)
-        layout.addWidget(self.atom_table)
+        self.atom_table.setMinimumHeight(220)
+        layout.addWidget(self.atom_table, 2)
 
         layout.addWidget(self._section_title("Diffraction data"))
         self.diffraction_table = self._table(["d [A]", "2theta", "Int.", "h", "k", "l", "Mult."], stretch_columns={2, 6})
-        self.diffraction_table.setMinimumHeight(160)
-        self.diffraction_table.setMaximumHeight(300)
-        layout.addWidget(self.diffraction_table)
-        layout.addStretch(1)
+        self.diffraction_table.setMinimumHeight(240)
+        layout.addWidget(self.diffraction_table, 3)
 
     def _field_grid(self, rows: list[tuple[str, str]]) -> QGridLayout:
         grid = QGridLayout()

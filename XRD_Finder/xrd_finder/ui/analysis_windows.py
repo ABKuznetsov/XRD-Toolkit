@@ -467,6 +467,7 @@ class PhaseFinderWindow(
         self._init_filter_state()
         self._init_services()
         self._init_runtime_state()
+        self._create_cursor_readout_panel()
         self._create_action_bar()
         self._create_match_plot(project)
         self._create_candidate_tables()
@@ -544,10 +545,10 @@ class PhaseFinderWindow(
         }
         self.grid_visible = True
         self.show_hkl_labels = False
-        self.cursor_position_enabled = False
+        self.cursor_position_enabled = True
         self.cursor_position_line = None
-        self.cursor_position_label = None
         self.cursor_position_proxy = None
+        self.cursor_position_status_label: QLabel | None = None
         self.legend_item = None
         self.active_overlay_entry_id: str | None = None
         self.match_candidates: list[dict[str, str]] = []
@@ -576,6 +577,18 @@ class PhaseFinderWindow(
         self._candidate_rank_scores: dict[int, float] = {}
         self._candidate_rank_index = 0
 
+    def _create_cursor_readout_panel(self) -> None:
+        self.cursor_position_status_label = QLabel("2theta: -    I: -")
+        self.cursor_position_status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.cursor_position_status_label.setStyleSheet(
+            "background: #20262d; border: 1px solid #3b4652; border-radius: 3px; "
+            "color: #d7e3f4; font-weight: 700; padding: 6px 8px;"
+        )
+        self.cursor_position_status_label.setMinimumHeight(30)
+        sidebar_layout = self.sidebar.layout()
+        if sidebar_layout is not None:
+            sidebar_layout.addWidget(self.cursor_position_status_label)
+
     def _create_action_bar(self) -> None:
         self.finder_action_bar = FinderActionBar()
         self.finder_action_bar.smoothRequested.connect(self._smooth_active_pattern_plot)
@@ -596,6 +609,7 @@ class PhaseFinderWindow(
         self.legend_item = ensure_right_legend(self.match_plot, clear=True)
         self.match_plot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.match_plot.customContextMenuRequested.connect(self._show_plot_context_menu)
+        self._set_cursor_position_enabled(True)
         if project.patterns:
             try:
                 self._refresh_observed_pattern_plot()
