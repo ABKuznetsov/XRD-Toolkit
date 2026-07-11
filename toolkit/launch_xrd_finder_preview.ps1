@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$AppId = "xrd_finder"
 )
 
@@ -82,7 +82,7 @@ function Show-StartupNoticeDialog {
     $subheading = New-Label "Первый запуск после установки или обновления" 96 52 520 22 11 "Bold" ([System.Drawing.Color]::FromArgb(92, 54, 10))
     $banner.Controls.Add($subheading)
 
-    $ru = New-Label "RU: Сейчас программа может заметно тормозить: она готовит окружение, создает кэши и может загружать данные баз. После первой настройки запуск и поиск будут быстрее. Скорость зависит от компьютера и интернета." 34 118 612 82 11 "Regular" ([System.Drawing.Color]::FromArgb(31, 41, 55))
+    $ru = New-Label "RU: Сейчас приложение может заметно тормозить: оно готовит окружение, создаёт кэши и может загружать данные из баз. После первой настройки запуск и поиск должны стать быстрее. Скорость зависит от вашего компьютера и интернета." 34 118 612 82 11 "Regular" ([System.Drawing.Color]::FromArgb(31, 41, 55))
     $dialog.Controls.Add($ru)
 
     $en = New-Label "EN: The app may feel slow for a while: it is preparing the runtime, building caches and may download database data. After the first setup, startup and search should be faster. Speed depends on your computer and internet connection." 34 208 612 82 10.5 "Regular" ([System.Drawing.Color]::FromArgb(55, 65, 81))
@@ -158,7 +158,7 @@ function Get-SetupProgressMessage {
     $joined = ($lines -join "`n")
     if ($joined -match "Downloading Python") { return "Downloading Python 3.11" }
     if ($joined -match "Installing Python") { return "Installing Python 3.11" }
-    if ($joined -match "Creating venv") { return "Creating XRD_Toolkit environment" }
+    if ($joined -match "Creating venv") { return "Creating Sci environment" }
     if ($joined -match "Upgrading pip") { return "Upgrading pip" }
     if ($joined -match "Failed to install package:\s*([^`r`n]+)") { return "Failed to install package: " + $Matches[1].Trim() }
     if ($joined -match "Installing package:\s*([^`r`n]+)") {
@@ -409,9 +409,10 @@ function Set-ProgressText {
 }
 
 $appRoot = Resolve-AppRoot
-$toolkitRoot = Join-Path $env:LOCALAPPDATA "XRD_Toolkit"
+$toolkitRoot = Join-Path $env:LOCALAPPDATA "Sci"
 $envRoot = Join-Path $toolkitRoot "env"
-$finderRoot = Join-Path $toolkitRoot "XRD_Finder"
+$appsRoot = Join-Path $toolkitRoot "apps"
+$finderRoot = Join-Path $appsRoot "xrd_phase_finder"
 $dataRoot = Join-Path $finderRoot "data"
 $logsRoot = Join-Path $toolkitRoot "logs"
 $updateRoot = Join-Path $toolkitRoot "updates"
@@ -427,7 +428,7 @@ function Write-LauncherLog {
 Write-LauncherLog "Preview launcher started from $appRoot"
 $pythonw = Join-Path $envRoot "Scripts\pythonw.exe"
 $pythonExe = Join-Path $envRoot "Scripts\python.exe"
-$setupBat = Join-Path $appRoot "toolkit\setup_xrd_toolkit_env.bat"
+$setupBat = Join-Path $appRoot "toolkit\setup_sci_env.bat"
 $manifestPath = Join-Path $appRoot "toolkit\manifest.json"
 $appManifestPath = Join-Path $appRoot "XRD_Finder\app.json"
 $appPackageRoot = Join-Path $appRoot "XRD_Finder"
@@ -500,6 +501,37 @@ function Test-ProcessHasVisibleWindow {
     return $found
 }
 
+function Stop-LegacySciPythonProcesses {
+    param([string]$ExpectedPython)
+    try {
+        $expected = [System.IO.Path]::GetFullPath($ExpectedPython).ToLowerInvariant()
+        $legacyRoot = [System.IO.Path]::GetFullPath("C:\Sci\Python").ToLowerInvariant()
+        $processes = Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe'" -ErrorAction SilentlyContinue
+        foreach ($process in $processes) {
+            $commandLine = [string]$process.CommandLine
+            if (-not $commandLine) { continue }
+            $normalized = $commandLine.ToLowerInvariant()
+            if ($normalized.Contains($legacyRoot) -and -not $normalized.Contains($expected)) {
+                Write-LauncherLog "Stopping legacy Sci Python process PID=$($process.ProcessId): $commandLine"
+                Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        Write-LauncherLog ("Legacy Sci process cleanup skipped: " + $_.Exception.Message)
+    }
+}
+
+function Test-PythonRuntime {
+    param([string]$PythonPath)
+    if (-not (Test-Path -LiteralPath $PythonPath)) { return $false }
+    try {
+        $process = Start-Process -FilePath $PythonPath -ArgumentList @("-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)") -Wait -PassThru -WindowStyle Hidden
+        return ($process.ExitCode -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 $script:Form = New-Object System.Windows.Forms.Form
 $script:Form.Text = "XRD Phase Finder"
 $script:Form.StartPosition = "CenterScreen"
@@ -561,6 +593,7 @@ try {
     Set-ProgressText 8 "Initializing"
     Set-Step 0 "Checking..." "Creating user data folders" "Blue"
     Ensure-Folder $toolkitRoot
+    Ensure-Folder $appsRoot
     Ensure-Folder $finderRoot
     Ensure-Folder $dataRoot
     Ensure-Folder $logsRoot
@@ -570,10 +603,10 @@ try {
 
     Pause-PreviewStep
     Set-ProgressText 28 "Preparing runtime"
-    Set-Step 1 "Checking..." "Looking for XRD_Toolkit runtime" "Blue"
-    if (-not (Test-Path -LiteralPath $pythonw)) {
+    Set-Step 1 "Checking..." "Looking for Sci runtime" "Blue"
+    if ((-not (Test-Path -LiteralPath $pythonw)) -or (-not (Test-PythonRuntime $pythonExe))) {
         Set-ProgressText 28 "First launch can take several minutes"
-        Set-Step 1 "Installing..." "First launch: downloading and configuring Python packages. Later starts will be faster." "Blue"
+        Set-Step 1 "Installing..." "Preparing or repairing the shared Sci Python environment. Later starts will be faster." "Blue"
         if (-not (Test-Path -LiteralPath $setupBat)) {
             throw "Setup script was not found: $setupBat"
         }
@@ -591,9 +624,64 @@ try {
     if (-not (Test-Path -LiteralPath $pythonExe)) {
         throw "Python executable was not found: $pythonExe"
     }
+    if (-not (Test-PythonRuntime $pythonExe)) {
+        throw "Sci Python environment is present but cannot be launched: $pythonExe"
+    }
+    Stop-LegacySciPythonProcesses $pythonExe
     Ensure-Folder (Join-Path $dataRoot "cod_cache")
     Ensure-Folder (Join-Path $dataRoot "cod_cache\rruff")
     Set-Step 1 "OK" "Runtime and cache database are ready" "Green"
+
+    Write-LauncherLog "Preparing Python app in the background while preview steps continue."
+    $env:PYTHONDONTWRITEBYTECODE = "1"
+    $env:XRD_FINDER_DATA_DIR = $dataRoot
+    $env:MPLCONFIGDIR = Join-Path $finderRoot "matplotlib"
+    $env:QT_OPENGL = "software"
+    $env:QT_QUICK_BACKEND = "software"
+    $env:QT_ANGLE_PLATFORM = "warp"
+    $env:QT_QPA_PLATFORM = "windows"
+    if ($env:PYTHONPATH) {
+        $env:PYTHONPATH = "$appPackageRoot;$env:PYTHONPATH"
+    } else {
+        $env:PYTHONPATH = $appPackageRoot
+    }
+    $startupLog = Join-Path $logsRoot "xrd_finder_startup.log"
+    $readyFile = Join-Path $logsRoot "xrd_finder_ready.flag"
+    $preparedFile = Join-Path $logsRoot "xrd_finder_prepared.flag"
+    $showSignalFile = Join-Path $logsRoot "xrd_finder_show.signal"
+    Remove-Item -LiteralPath $readyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $preparedFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $showSignalFile -Force -ErrorAction SilentlyContinue
+    Write-LauncherLog "Starting Python app with $pythonExe -m $entryModule"
+    "[$(Get-Date -Format s)] Starting XRD Phase Finder from $appRoot" | Set-Content -LiteralPath $startupLog -Encoding UTF8
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $pythonExe
+    $startInfo.Arguments = "-m $entryModule"
+    $startInfo.WorkingDirectory = $appRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
+    $startInfo.EnvironmentVariables["XRD_FINDER_DATA_DIR"] = $dataRoot
+    $startInfo.EnvironmentVariables["XRD_FINDER_PREPARED_FILE"] = $preparedFile
+    $startInfo.EnvironmentVariables["XRD_FINDER_SHOW_SIGNAL_FILE"] = $showSignalFile
+    $startInfo.EnvironmentVariables["XRD_FINDER_READY_FILE"] = $readyFile
+    $startInfo.EnvironmentVariables["MPLCONFIGDIR"] = Join-Path $finderRoot "matplotlib"
+    $startInfo.EnvironmentVariables["PYTHONPATH"] = $env:PYTHONPATH
+    $startInfo.EnvironmentVariables["QT_OPENGL"] = "software"
+    $startInfo.EnvironmentVariables["QT_QUICK_BACKEND"] = "software"
+    $startInfo.EnvironmentVariables["QT_ANGLE_PLATFORM"] = "warp"
+    $startInfo.EnvironmentVariables["QT_QPA_PLATFORM"] = "windows"
+    $appProcess = New-Object System.Diagnostics.Process
+    $appProcess.StartInfo = $startInfo
+    Register-ObjectEvent -InputObject $appProcess -EventName OutputDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
+    Register-ObjectEvent -InputObject $appProcess -EventName ErrorDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
+    $null = $appProcess.Start()
+    Write-LauncherLog "Python app process started. PID=$($appProcess.Id)"
+    $appProcess.BeginOutputReadLine()
+    $appProcess.BeginErrorReadLine()
+
 
     Pause-PreviewStep
     Set-ProgressText 48 "Checking sources"
@@ -699,50 +787,9 @@ try {
     ($updateStatus | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath (Join-Path $updateRoot "$AppId.json") -Encoding UTF8
 
     Pause-PreviewStep
-    Set-ProgressText 88 "Loading settings"
-    Set-Step 4 "Loading..." "User preferences" "Blue"
-    $env:PYTHONDONTWRITEBYTECODE = "1"
-    $env:XRD_FINDER_DATA_DIR = $dataRoot
-    $env:MPLCONFIGDIR = Join-Path $finderRoot "matplotlib"
-    $env:QT_OPENGL = "software"
-    $env:QT_QUICK_BACKEND = "software"
-    $env:QT_ANGLE_PLATFORM = "warp"
-    $env:QT_QPA_PLATFORM = "windows"
-    if ($env:PYTHONPATH) {
-        $env:PYTHONPATH = "$appPackageRoot;$env:PYTHONPATH"
-    } else {
-        $env:PYTHONPATH = $appPackageRoot
-    }
-    $startupLog = Join-Path $logsRoot "xrd_finder_startup.log"
-    $readyFile = Join-Path $logsRoot "xrd_finder_ready.flag"
-    Remove-Item -LiteralPath $readyFile -Force -ErrorAction SilentlyContinue
-    Write-LauncherLog "Starting Python app with $pythonExe -m $entryModule"
-    "[$(Get-Date -Format s)] Starting XRD Phase Finder from $appRoot" | Set-Content -LiteralPath $startupLog -Encoding UTF8
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $pythonExe
-    $startInfo.Arguments = "-m $entryModule"
-    $startInfo.WorkingDirectory = $appRoot
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1"
-    $startInfo.EnvironmentVariables["XRD_FINDER_DATA_DIR"] = $dataRoot
-    $startInfo.EnvironmentVariables["XRD_FINDER_READY_FILE"] = $readyFile
-    $startInfo.EnvironmentVariables["MPLCONFIGDIR"] = Join-Path $finderRoot "matplotlib"
-    $startInfo.EnvironmentVariables["PYTHONPATH"] = $env:PYTHONPATH
-    $startInfo.EnvironmentVariables["QT_OPENGL"] = "software"
-    $startInfo.EnvironmentVariables["QT_QUICK_BACKEND"] = "software"
-    $startInfo.EnvironmentVariables["QT_ANGLE_PLATFORM"] = "warp"
-    $startInfo.EnvironmentVariables["QT_QPA_PLATFORM"] = "windows"
-    $appProcess = New-Object System.Diagnostics.Process
-    $appProcess.StartInfo = $startInfo
-    Register-ObjectEvent -InputObject $appProcess -EventName OutputDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
-    Register-ObjectEvent -InputObject $appProcess -EventName ErrorDataReceived -Action { if ($EventArgs.Data) { Add-Content -LiteralPath $Event.MessageData -Value $EventArgs.Data } } -MessageData $startupLog | Out-Null
-    $null = $appProcess.Start()
-    Write-LauncherLog "Python app process started. PID=$($appProcess.Id)"
-    $appProcess.BeginOutputReadLine()
-    $appProcess.BeginErrorReadLine()
+    Set-ProgressText 88 "Opening application"
+    Set-Step 4 "Opening..." "Showing the main application window" "Blue"
+    "show" | Set-Content -LiteralPath $showSignalFile -Encoding UTF8
     Wait-ApplicationMainWindow $appProcess 120 $startupLog $readyFile | Out-Null
     Write-LauncherLog "Main application window is ready."
     if ($showStartupNotice) {
@@ -765,16 +812,3 @@ try {
     $script:Form.Close()
     $script:Form.Dispose()
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -7,8 +7,29 @@ from typing import Callable
 import numpy as np
 
 from xrd_finder.finder import FinderCandidateInput
-from xrd_finder.ui.pattern_plot_helpers import plot_phase_marker_lane, plot_profile
+from xrd_finder.ui.pattern_plot_helpers import add_hkl_labels, plot_peak_intensity_sticks, plot_phase_marker_lane, plot_profile
+from xrd_finder.ui.plot_style import PlotStyle
 
+
+
+def _tag_plot_item(item, pattern_id: str | None):
+    if pattern_id is not None:
+        try:
+            item._xrd_pattern_id = pattern_id
+        except Exception:
+            pass
+    return item
+
+
+def _tag_plot_items(items, pattern_id: str | None):
+    for item in items:
+        _tag_plot_item(item, pattern_id)
+    return items
+
+
+def _tag_new_layer_items(plot_layers: dict[str, list], before_counts: dict[str, int], pattern_id: str | None) -> None:
+    for layer, count in before_counts.items():
+        _tag_plot_items(plot_layers.get(layer, [])[count:], pattern_id)
 
 def _candidate_iic_value(candidate: dict[str, str], estimate_candidate_iic: Callable[[dict[str, str]], float]) -> float:
     raw_value = candidate.get("I/Ic*", "") or candidate.get("I/Ic", "")
@@ -22,6 +43,28 @@ def _candidate_iic_value(candidate: dict[str, str], estimate_candidate_iic: Call
             return value
     return estimate_candidate_iic(candidate)
 
+
+def _peak_values(value, length: int, default):
+    if value is None:
+        return [default] * length
+    try:
+        values = list(value)
+    except TypeError:
+        values = [value]
+    if len(values) < length:
+        values.extend([default] * (length - len(values)))
+    return values[:length]
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str) and not value.strip():
+            return default
+        return int(round(float(value)))
+    except Exception:
+        return default
 def build_finder_candidate_inputs(
     candidates: list[dict[str, str]],
     candidate_cif_path: Callable[[dict[str, str]], Path],
@@ -58,6 +101,7 @@ def draw_match_profile_result(
     plot_layers: dict[str, list],
     show_all_selected_patterns: bool,
     active_plot_context: dict[str, float],
+    pattern_id: str | None = None,
     phase_color: Callable[[dict[str, str], int], str],
     phase_legend_label: Callable[[dict[str, str]], str],
     candidate_key: Callable[[dict[str, str]], str],
@@ -70,7 +114,11 @@ def draw_match_profile_result(
     match_zero_shifts: dict[str, float],
     match_cell_scales: dict[str, float],
     match_alignment_scores: dict[str, str],
+    style: PlotStyle | None = None,
+    show_hkl_labels: bool = False,
+    show_peak_labels: bool = False,
 ) -> None:
+    style = style or PlotStyle()
     x = np.asarray(result.pattern_x, dtype=float)
     background = np.asarray(result.background, dtype=float)
     calculated_total = np.asarray(result.calculated_total, dtype=float)
@@ -115,8 +163,9 @@ def draw_match_profile_result(
             background_plot + profile,
             color,
             f"phase {phase_label}",
-            width=1.5,
+            width=style.phase.width,
         )
+        _tag_plot_item(contribution_item, pattern_id)
         plot_layers["phase_profiles"].append(contribution_item)
         phase_peak_sets.append(
             (
@@ -125,45 +174,113 @@ def draw_match_profile_result(
                 np.asarray(candidate_result.peak_two_theta, dtype=float),
             )
         )
-        tick_peaks = [
-            SimpleNamespace(
-                two_theta=float(peak_two_theta),
-                reference_two_theta=float(reference_two_theta),
-                intensity=float(peak_intensity),
+        peak_two_theta_values = _peak_values(candidate_result.peak_two_theta, len(candidate_result.peak_two_theta), 0.0)
+        peak_count = len(peak_two_theta_values)
+        reference_two_theta_values = _peak_values(
+            getattr(candidate_result, "peak_reference_two_theta", None),
+            peak_count,
+            None,
+        )
+        intensity_values = _peak_values(getattr(candidate_result, "peak_intensity", None), peak_count, 100.0)
+        h_values = _peak_values(getattr(candidate_result, "peak_h", None), peak_count, 0)
+        k_values = _peak_values(getattr(candidate_result, "peak_k", None), peak_count, 0)
+        l_values = _peak_values(getattr(candidate_result, "peak_l", None), peak_count, 0)
+        tick_peaks = []
+        for peak_two_theta, reference_two_theta, peak_intensity, h, k, l in zip(
+            peak_two_theta_values,
+            reference_two_theta_values,
+            intensity_values,
+            h_values,
+            k_values,
+            l_values,
+        ):
+            try:
+                two_theta = float(peak_two_theta)
+                if not np.isfinite(two_theta):
+                    continue
+            except Exception:
+                continue
+            try:
+                reference_two_theta = two_theta if reference_two_theta is None else float(reference_two_theta)
+            except Exception:
+                reference_two_theta = two_theta
+            try:
+                intensity = float(peak_intensity)
+            except Exception:
+                intensity = 100.0
+            tick_peaks.append(
+                SimpleNamespace(
+                    two_theta=two_theta,
+                    reference_two_theta=reference_two_theta,
+                    intensity=max(intensity, 0.0),
+                    h=_safe_int(h),
+                    k=_safe_int(k),
+                    l=_safe_int(l),
+                )
             )
-            for peak_two_theta, reference_two_theta, peak_intensity in zip(
-                candidate_result.peak_two_theta,
-                candidate_result.peak_reference_two_theta or candidate_result.peak_two_theta,
-                candidate_result.peak_intensity or [100.0] * len(candidate_result.peak_two_theta),
-            )
-        ]
-        if not show_all_selected_patterns:
-            y_span = max(observed_ymax - observed_ymin, observed_ymax, 1.0)
-            lane_height = y_span * 0.038
-            lane_gap = lane_height * 0.85
-            lane_top = min(observed_ymin_plot, float(np.nanpercentile(background_plot, 5))) - y_span * 0.12
-            lane_baseline = lane_top - index * (lane_height + lane_gap)
-            lane_items = plot_phase_marker_lane(
+        y_span = max(observed_ymax - observed_ymin, observed_ymax, float(active_plot_context.get("height", 0.0)), 1.0)
+        profile_height = max(float(np.nanmax(profile)) if len(profile) else 0.0, y_span * 0.035)
+        if show_all_selected_patterns:
+            preview_baseline = background_plot + index * y_span * 0.025
+            preview_height = profile_height
+            label_y = preview_baseline
+        else:
+            preview_baseline = background_plot
+            preview_height = profile_height
+            shift_lane_height = y_span * 0.045
+            shift_lane_gap = shift_lane_height * 0.85
+            shift_lane_top = min(observed_ymin_plot, float(np.nanpercentile(background_plot, 5))) - y_span * 0.12
+            shift_lane_baseline = shift_lane_top - index * (shift_lane_height + shift_lane_gap)
+            shift_items = plot_phase_marker_lane(
                 match_plot,
                 tick_peaks,
                 color,
-                lane_baseline,
-                lane_height,
+                shift_lane_baseline,
+                shift_lane_height,
                 None,
                 float(np.nanmin(x) + (np.nanmax(x) - np.nanmin(x)) * 0.005),
             )
-            plot_layers["phase_ticks"].extend(lane_items)
+            _tag_plot_items(shift_items, pattern_id)
+            plot_layers["phase_ticks"].extend(shift_items)
+            label_y = preview_baseline
+        stick_item = plot_peak_intensity_sticks(
+            match_plot,
+            tick_peaks,
+            color,
+            x,
+            preview_baseline,
+            preview_height,
+            f"preview peaks {phase_label}",
+            width=style.stick.width,
+        )
+        _tag_plot_item(stick_item, pattern_id)
+        plot_layers["preview_peak_positions"].append(stick_item)
+        if show_hkl_labels:
+            hkl_items = add_hkl_labels(
+                match_plot,
+                tick_peaks,
+                color,
+                label_y,
+                preview_height,
+                limit=18,
+                above_peaks=True,
+                x_grid=x,
+            )
+            _tag_plot_items(hkl_items, pattern_id)
+            plot_layers["hkl"].extend(hkl_items)
 
     background_item = plot_profile(
         match_plot,
         x,
         background_plot,
-        "#9aa0a6",
+        style.background.color or "#9aa0a6",
         "background",
-        width=1.2,
+        width=style.background.width,
     )
+    _tag_plot_item(background_item, pattern_id)
     plot_layers["background"].append(background_item)
     fit_quality = profile_fit_quality(observed_y, background, calculated_total)
+    marker_layer_counts = {layer: len(plot_layers.get(layer, [])) for layer in ("coverage_markers", "peak_labels", "unknown_peaks")}
     explained, total_observed = add_peak_coverage_markers(
         x,
         observed_y_plot,
@@ -171,14 +288,16 @@ def draw_match_profile_result(
         phase_peak_sets,
         getattr(result, "observed_peaks", []),
         phase_assignment_styles,
+        show_peak_labels=show_peak_labels,
     )
+    _tag_new_layer_items(plot_layers, marker_layer_counts, pattern_id)
     sum_item = plot_profile(
         match_plot,
         x,
         calculated_total_plot,
-        "#0b8043",
+        style.calculated.color or "#0b8043",
         f"calculated total | fit {fit_quality:.0f}% | peaks {explained}/{total_observed}",
-        width=1.9,
+        width=style.calculated.width,
     )
+    _tag_plot_item(sum_item, pattern_id)
     plot_layers["total_profile"].append(sum_item)
-    match_plot.setTitle("")

@@ -17,12 +17,27 @@ class CalculatedPlotItems:
     hkl_items: list[object] = field(default_factory=list)
 
 
+def remove_plot_legend(plot: pg.PlotWidget):
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is not None:
+        try:
+            legend.scene().removeItem(legend)
+        except Exception:
+            pass
+    plot.plotItem.legend = None
+    return None
+
+
 def ensure_right_legend(plot: pg.PlotWidget, clear: bool = False):
-    legend = plot.plotItem.legend
+    legend = getattr(plot.plotItem, "legend", None)
+    if legend is not None and legend.scene() is None:
+        plot.plotItem.legend = None
+        legend = None
     if legend is None:
         legend = plot.addLegend(offset=(-12, 12))
     elif clear:
         legend.clear()
+    legend.setVisible(True)
     legend.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-12, 12))
     try:
         legend.setLabelTextColor("#111111")
@@ -195,26 +210,42 @@ def add_hkl_labels(
     plot: pg.PlotWidget,
     peaks,
     color: str,
-    y: float,
+    y,
     height: float | None = None,
     limit: int = 30,
     angle: float = 90,
     above_peaks: bool = False,
+    x_grid=None,
 ):
     labels = []
+    y_values = np.asarray(y, dtype=float)
+    x_values = np.asarray(x_grid, dtype=float) if x_grid is not None else None
+
+    def base_y_at(two_theta: float) -> float:
+        if y_values.shape == ():
+            return float(y_values)
+        if x_values is not None and x_values.shape == y_values.shape and y_values.size:
+            return float(np.interp(two_theta, x_values, y_values))
+        return float(np.nanmedian(y_values)) if y_values.size else 0.0
+
     display_peaks = sorted(peaks, key=lambda item: getattr(item, "intensity", 0.0), reverse=True)[:limit]
     display_peaks = sorted(display_peaks, key=lambda item: getattr(item, "two_theta", 0.0))
     for peak in display_peaks:
-        item = pg.TextItem(f"{peak.h}{peak.k}{peak.l}", color=color, anchor=(0.5, 1.0), angle=angle)
+        h = getattr(peak, "h", "")
+        k = getattr(peak, "k", "")
+        l = getattr(peak, "l", "")
+        item = pg.TextItem(f"({h}{k}{l})", color=color, anchor=(0.5, 1.0), angle=angle)
         label_font = QFont()
         label_font.setPointSize(10)
         label_font.setWeight(QFont.Weight.DemiBold)
         item.setFont(label_font)
+        two_theta = float(getattr(peak, "two_theta", 0.0))
         if above_peaks and height is not None:
-            label_y = y + height * (max(float(peak.intensity), 0.0) / 100.0) + height * 0.09
+            intensity = max(float(getattr(peak, "intensity", 0.0)), 0.0)
+            label_y = base_y_at(two_theta) + float(height) * intensity / 100.0 + float(height) * 0.09
         else:
-            label_y = y
-        item.setPos(peak.two_theta, label_y)
+            label_y = base_y_at(two_theta)
+        item.setPos(two_theta, float(label_y))
         plot.addItem(item)
         labels.append(item)
     return labels

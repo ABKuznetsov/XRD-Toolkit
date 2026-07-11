@@ -4,11 +4,11 @@ set -e
 APP_NAME="XRD Phase Finder"
 SOURCE_ROOT="$(cd "$(dirname "$0")" && pwd)"
 SOURCE_APP_ROOT="$SOURCE_ROOT/XRD_Finder"
-XRD_TOOLKIT_ROOT="$HOME/Library/Application Support/XRD_Toolkit"
-INSTALLED_SOURCE_ROOT="$XRD_TOOLKIT_ROOT/app"
-XRD_TOOLKIT_ENV="$XRD_TOOLKIT_ROOT/env"
-XRD_FINDER_USER_ROOT="$XRD_TOOLKIT_ROOT/XRD_Finder"
-XRD_TOOLKIT_LOGS="$XRD_TOOLKIT_ROOT/logs"
+SCI_ROOT="$HOME/Library/Application Support/Sci"
+INSTALLED_SOURCE_ROOT="$SCI_ROOT/app"
+SCI_ENV="$SCI_ROOT/env"
+XRD_FINDER_USER_ROOT="$SCI_ROOT/XRD_Finder"
+SCI_LOGS="$SCI_ROOT/logs"
 if [ -n "$XRD_FINDER_INSTALL_DIR" ]; then
     INSTALL_DIR="$XRD_FINDER_INSTALL_DIR"
 elif [ -w "/Applications" ]; then
@@ -25,7 +25,7 @@ cd "$SOURCE_ROOT"
 
 echo "Installing $APP_NAME for macOS"
 echo "Source folder: $SOURCE_ROOT"
-echo "User runtime: $XRD_TOOLKIT_ROOT"
+echo "User runtime: $SCI_ROOT"
 echo "Application folder: $INSTALL_DIR"
 echo
 
@@ -56,7 +56,7 @@ APP_ROOT="$TOOLKIT_ROOT/XRD_Finder"
 chmod +x "$TOOLKIT_ROOT"/install_macos.command "$TOOLKIT_ROOT"/update_macos.command "$TOOLKIT_ROOT"/toolkit/*.command "$TOOLKIT_ROOT"/XRD_Finder/*.command 2>/dev/null || true
 
 echo "Preparing scientific Python environment..."
-"$TOOLKIT_ROOT/toolkit/setup_xrd_toolkit_env.command"
+"$TOOLKIT_ROOT/toolkit/setup_sci_env.command"
 
 echo "Creating application bundle: $APP_BUNDLE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
@@ -120,13 +120,13 @@ cat > "$MACOS_DIR/xrd-phase-finder" <<LAUNCHER
 set -e
 
 APP_ROOT="$TOOLKIT_ROOT"
-XRD_TOOLKIT_ROOT="$XRD_TOOLKIT_ROOT"
-XRD_TOOLKIT_ENV="$XRD_TOOLKIT_ENV"
+SCI_ROOT="$SCI_ROOT"
+SCI_ENV="$SCI_ENV"
 XRD_FINDER_USER_ROOT="$XRD_FINDER_USER_ROOT"
-XRD_TOOLKIT_LOGS="$XRD_TOOLKIT_LOGS"
-LOG_FILE="\$XRD_TOOLKIT_LOGS/xrd_finder_console.log"
+SCI_LOGS="$SCI_LOGS"
+LOG_FILE="\$SCI_LOGS/xrd_finder_console.log"
 
-mkdir -p "\$XRD_TOOLKIT_LOGS" "\$XRD_FINDER_USER_ROOT"
+mkdir -p "\$SCI_LOGS" "\$XRD_FINDER_USER_ROOT"
 
 if [ -d "\$APP_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
     (
@@ -137,7 +137,7 @@ if [ -d "\$APP_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
         BASE_REV="\$(git merge-base @ "\$UPSTREAM_REV" 2>/dev/null || true)"
         if [ -n "\$LOCAL_REV" ] && [ -n "\$UPSTREAM_REV" ] && [ "\$LOCAL_REV" != "\$UPSTREAM_REV" ] && [ "\$LOCAL_REV" = "\$BASE_REV" ]; then
             git pull --ff-only >/dev/null 2>&1
-            "\$APP_ROOT/toolkit/setup_xrd_toolkit_env.command" >/dev/null 2>&1
+            "\$APP_ROOT/toolkit/setup_sci_env.command" >/dev/null 2>&1
         fi
     ) || true
 fi
@@ -149,7 +149,7 @@ export MPLCONFIGDIR="\$XRD_FINDER_USER_ROOT/matplotlib"
 export QT_MAC_WANTS_LAYER=1
 cd "\$APP_ROOT"
 echo "[\$(date)] Starting XRD Phase Finder" > "\$LOG_FILE"
-exec "\$XRD_TOOLKIT_ENV/bin/python" -m xrd_finder.apps.finder_gui "\$@" >> "\$LOG_FILE" 2>&1
+exec "\$SCI_ENV/bin/python" -m xrd_finder.apps.finder_gui "\$@" >> "\$LOG_FILE" 2>&1
 LAUNCHER
 
 chmod +x "$MACOS_DIR/xrd-phase-finder"

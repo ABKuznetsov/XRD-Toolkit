@@ -15,6 +15,7 @@ from xrd_finder.ui.pattern_plot_helpers import (
     scale_profile_to_reference,
 )
 from xrd_finder.ui.peak_matching import PhaseAlignmentEstimate
+from xrd_finder.ui.plot_style import PlotStyle
 
 
 @dataclass(slots=True)
@@ -113,7 +114,9 @@ def draw_structure_overlay(
     show_hkl_labels: bool,
     add_peak_residual_links,
     observed,
+    style: PlotStyle | None = None,
 ) -> None:
+    style = style or PlotStyle()
     color = "#1a73e8" if preview else "#d93025"
     active_plot_offset = float(active_plot_context.get("offset", 0.0))
     marker_top = (
@@ -133,9 +136,9 @@ def draw_structure_overlay(
             match_plot,
             overlay.x,
             overlay.background + active_plot_offset,
-            "#9aa0a6",
+            style.background.color or "#9aa0a6",
             "background",
-            width=0.8,
+            width=max(style.background.width - 0.4, 0.5),
         )
         plot_layers["calculated_profile"].append(background_item)
 
@@ -150,7 +153,7 @@ def draw_structure_overlay(
             preview_baseline,
             preview_height,
             f"preview peaks {structure.name}",
-            width=3.0,
+            width=style.stick.width,
         )
         plot_layers["preview_peak_positions"].append(stick_item)
         if show_hkl_labels:
@@ -164,11 +167,6 @@ def draw_structure_overlay(
                 above_peaks=True,
             )
             plot_layers["preview_hkl"].extend(hkl_items)
-        match_plot.setTitle(
-            f"Phase Finder: peak preview for {structure.name} ({len(overlay.peaks)} peaks, {overlay.alignment.status} {overlay.alignment.matched_peaks}/{overlay.alignment.total_peaks})",
-            color="#111111",
-            size="13pt",
-        )
         return
 
     calc_item = plot_profile(
@@ -177,7 +175,7 @@ def draw_structure_overlay(
         overlay.y + overlay.background + active_plot_offset,
         color,
         f"calculated total {structure.name}",
-        width=1.8,
+        width=style.calculated.width,
     )
     plot_layers["calculated_profile"].append(calc_item)
     lane_height = y_span * (0.045 if observed is not None else 0.032)
@@ -213,8 +211,3 @@ def draw_structure_overlay(
             limit=18,
         )
         plot_layers["hkl"].extend(hkl_items)
-    match_plot.setTitle(
-        f"Phase Finder: calculated overlay for {structure.name} ({len(overlay.peaks)} peaks, FWHM {overlay.profile_fwhm:.3g}, {overlay.alignment.status} {overlay.alignment.matched_peaks}/{overlay.alignment.total_peaks})",
-        color="#111111",
-        size="13pt",
-    )

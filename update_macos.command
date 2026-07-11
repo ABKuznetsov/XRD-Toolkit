@@ -26,7 +26,7 @@ git pull --ff-only origin main
 
 echo
 echo "Updating Python environment after GitHub update..."
-"$APP_ROOT/toolkit/setup_xrd_toolkit_env.command"
+"$APP_ROOT/toolkit/setup_sci_env.command"
 
 echo
 echo "Update complete."

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from scipy.optimize import nnls
@@ -15,7 +17,7 @@ from xrd_finder.finder.models import (
     FinderResult,
     ObservedPeak,
 )
-from xrd_finder.finder.observed_pattern_processor import ObservedPatternProcessor
+from xrd_finder.finder.observed_pattern_processor import ObservedPatternData, ObservedPatternProcessor
 from xrd_finder.finder.profile_calculator import CachedProfileCalculator, array_fingerprint
 from xrd_finder.services.calculated_pattern_service import (
     CU_KA1_WAVELENGTH,
@@ -64,6 +66,7 @@ class FinderService:
         sticks_cache_limit: int = 256,
         profile_cache_limit: int = 256,
         profile_cache_max_bytes: int = 128 * 1024 * 1024,
+        observed_cache_limit: int = 64,
         heuristics: FinderHeuristics | None = None,
     ) -> None:
         self.calculated_pattern_service = calculated_pattern_service or CalculatedPatternService()
@@ -76,9 +79,13 @@ class FinderService:
         )
         self.assignment_builder = AssignmentBuilder()
         self.observed_processor = ObservedPatternProcessor()
+        self._observed_cache: OrderedDict[tuple[object, ...], ObservedPatternData] = OrderedDict()
+        self._observed_cache_limit = max(0, int(observed_cache_limit))
+        self._observed_hits = 0
+        self._observed_misses = 0
 
     def run(self, finder_input: FinderInput) -> FinderResult:
-        observed = self.observed_processor.prepare(finder_input)
+        observed = self._prepare_observed_cached(finder_input)
         x_grid = observed.x_grid
         wavelength = finder_input.wavelength or CU_KA1_WAVELENGTH
         primary_wavelength = radiation_lines_from_wavelength(wavelength)[0][0]
@@ -156,6 +163,9 @@ class FinderService:
                 peak_two_theta=[float(peak.two_theta) for peak in peaks],
                 peak_reference_two_theta=[float(peak.two_theta) for peak in reference_peaks],
                 peak_intensity=[float(peak.intensity) for peak in peaks],
+                peak_h=[int(getattr(peak, "h", 0)) for peak in peaks],
+                peak_k=[int(getattr(peak, "k", 0)) for peak in peaks],
+                peak_l=[int(getattr(peak, "l", 0)) for peak in peaks],
             )
             results.append(candidate_result)
             if float(scale) > 1e-9:
@@ -179,7 +189,52 @@ class FinderService:
         )
 
     def cache_info(self) -> dict[str, int]:
-        return self.profile_calculator.cache_info()
+        info = self.profile_calculator.cache_info()
+        info.update({
+            "observed": len(self._observed_cache),
+            "observed_hits": int(self._observed_hits),
+            "observed_misses": int(self._observed_misses),
+        })
+        return info
+
+    def clear_observed_cache(self) -> None:
+        self._observed_cache.clear()
+        self._observed_hits = 0
+        self._observed_misses = 0
+
+    def _prepare_observed_cached(self, finder_input: FinderInput) -> ObservedPatternData:
+        cache_key = self._observed_cache_key(finder_input)
+        cached = self._observed_cache.get(cache_key)
+        if cached is not None:
+            self._observed_hits += 1
+            self._observed_cache.move_to_end(cache_key)
+            return cached
+        self._observed_misses += 1
+        observed = self.observed_processor.prepare(finder_input)
+        if self._observed_cache_limit > 0:
+            self._observed_cache[cache_key] = observed
+            while len(self._observed_cache) > self._observed_cache_limit:
+                self._observed_cache.popitem(last=False)
+        return observed
+
+    def _observed_cache_key(self, finder_input: FinderInput) -> tuple[object, ...]:
+        if finder_input.observed_x is not None and finder_input.observed_y is not None:
+            x = np.asarray(finder_input.observed_x, dtype=float)
+            y = np.asarray(finder_input.observed_y, dtype=float)
+            source_key = ("arrays", array_fingerprint(x), array_fingerprint(y))
+        else:
+            path = Path(finder_input.pattern_path)
+            try:
+                stat = path.stat()
+                source_key = ("file", str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+            except OSError:
+                source_key = ("file", str(path))
+        return (
+            source_key,
+            bool(finder_input.subtract_background),
+            int(finder_input.smoothing_window),
+            None if finder_input.fwhm is None else round(float(finder_input.fwhm), 6),
+        )
 
     def _candidate_key(self, candidate: FinderCandidateInput) -> str:
         if candidate.entry_id:

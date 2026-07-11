@@ -27,7 +27,7 @@ find_python() {
 PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
     echo "Could not find a Python with required packages: PySide6, numpy, scipy, pyqtgraph."
-    echo "Run ./setup_env.sh first to create the shared Toolkit .venv, or install XRD_Finder/requirements.txt into Python 3.11+."
+    echo "Run ./setup_env.sh first to create the shared Sci environment, or install XRD_Finder/requirements.txt into Python 3.11+."
     echo
     echo "If Qt fails to start on Linux, install the platform packages for your desktop:"
     echo "  Ubuntu/Debian: sudo apt install libxcb-cursor0 libegl1"

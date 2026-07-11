@@ -10,9 +10,7 @@ from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.finder_state import FinderProjectState
 from xrd_finder.core.phase import Phase
 from xrd_finder.core.project import Project
-from xrd_finder.core.refinement import RefinementMetrics, RefinementResult
 from xrd_finder.core.result import AnalysisResult
-from xrd_finder.core.series import SeriesAnalysis, SeriesPoint
 from xrd_finder.core.structure import AtomSite, CellParameters, Structure
 
 
@@ -67,11 +65,7 @@ def _convert_value(annotation: Any, value: Any) -> Any:
         Structure,
         CellParameters,
         AtomSite,
-        RefinementResult,
-        RefinementMetrics,
         AnalysisResult,
-        SeriesAnalysis,
-        SeriesPoint,
         FinderProjectState,
     }:
         return _from_dataclass(annotation, value)

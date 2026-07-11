@@ -7,6 +7,7 @@ from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -89,6 +90,7 @@ from xrd_finder.ui.peak_matching import (
 )
 from xrd_finder.ui.phase_finder_menu import build_phase_finder_menu_bar
 from xrd_finder.ui.plot_actions import PhaseFinderPlotActionsMixin
+from xrd_finder.ui.plot_view_actions import PhaseFinderPlotViewActionsMixin
 from xrd_finder.ui.preprocessing_actions import PhaseFinderPreprocessingActionsMixin
 from xrd_finder.ui.project_state_actions import PhaseFinderProjectStateActionsMixin
 from xrd_finder.ui.project_tree_actions import PhaseFinderProjectTreeActionsMixin
@@ -459,6 +461,7 @@ class PhaseFinderWindow(
     PhaseFinderCandidateStructureActionsMixin,
     PhaseFinderPreprocessingActionsMixin,
     PhaseFinderObservedPatternActionsMixin,
+    PhaseFinderPlotViewActionsMixin,
     PhaseFinderPlotActionsMixin,
     PhaseFinderCandidateSearchActionsMixin,
     PhaseFinderDatabaseActionsMixin,
@@ -522,6 +525,7 @@ class PhaseFinderWindow(
         self.ccdc_doi_input: QLineEdit | None = None
         self.database_panel: DatabasePanelWidget | None = None
         self.compound_card: CompoundCardWidget | None = None
+        self._init_plot_view_state()
         self.inorganics_checkbox: QCheckBox | None = None
         self.organics_checkbox: QCheckBox | None = None
         self.structural_data_checkbox: QCheckBox | None = None
@@ -568,10 +572,16 @@ class PhaseFinderWindow(
         self._observed_probability_cache: tuple[tuple[object, ...], np.ndarray, np.ndarray, list[tuple[float, float]]] | None = None
         self._candidate_peak_cache: dict[tuple[str, float, float, float], list] = {}
         self._candidate_probability_cache: dict[tuple[object, ...], float] = {}
+        self._candidate_gain_profile_cache: dict[tuple[object, ...], np.ndarray] = {}
         self.show_all_selected_patterns = False
         self.pattern_stack_offset_percent = 10
         self.normalize_observed_patterns = False
         self.observed_pattern_plot_context: dict[str, dict[str, float]] = {}
+        self.observed_pattern_colors: dict[str, str] = {}
+        self.active_profile_pattern_id: str | None = None
+        self.profile_states: dict[str, dict[str, object]] = {}
+        self.match_profile_result_cache: dict[tuple[object, ...], object] = {}
+        self._profile_state_loading = False
         self.match_plot_view_initialized = False
         self._pending_candidate_row = -1
         self._candidate_activation_timer = QTimer(self)
@@ -582,6 +592,146 @@ class PhaseFinderWindow(
         self._candidate_rank_rows: list[list[str]] = []
         self._candidate_rank_scores: dict[int, float] = {}
         self._candidate_rank_index = 0
+
+    def _candidate_copy_list(self, candidates: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [dict(candidate) for candidate in candidates]
+
+    def _current_profile_pattern_id(self) -> str | None:
+        pattern = self._active_pattern()
+        return pattern.id if pattern is not None else None
+
+    def _save_active_profile_state(self) -> None:
+        if getattr(self, "_profile_state_loading", False):
+            return
+        pattern_id = self.active_profile_pattern_id or self._current_profile_pattern_id()
+        if not pattern_id:
+            return
+        state = self.profile_states.setdefault(pattern_id, {})
+        state["candidates"] = self._candidate_copy_list(self.match_candidates)
+
+    def _load_profile_state(self, pattern_id: str | None) -> None:
+        self._profile_state_loading = True
+        try:
+            state = self.profile_states.get(pattern_id or "", {})
+            candidates = state.get("candidates", [])
+            self.match_candidates = self._candidate_copy_list(candidates) if isinstance(candidates, list) else []
+            self.match_structures.clear()
+            self.match_scales.clear()
+            self.match_quantities.clear()
+            self.match_iic.clear()
+            self.match_zero_shifts.clear()
+            self.match_cell_scales.clear()
+            self.match_alignment_scores.clear()
+            if hasattr(self, "_update_match_table"):
+                self._update_match_table()
+        finally:
+            self._profile_state_loading = False
+
+    def _activate_profile_state_for_pattern(self, pattern_id: str | None) -> None:
+        if not pattern_id:
+            return
+        previous_id = self.active_profile_pattern_id
+        if previous_id == pattern_id:
+            return
+        if previous_id:
+            self._save_active_profile_state()
+        elif self.match_candidates and pattern_id not in self.profile_states:
+            self.active_profile_pattern_id = pattern_id
+            self._save_active_profile_state()
+        self.active_profile_pattern_id = pattern_id
+        self._load_profile_state(pattern_id)
+
+    def _activate_current_profile_state(self) -> None:
+        self._activate_profile_state_for_pattern(self._current_profile_pattern_id())
+
+    def _profile_candidates_for_pattern(self, pattern) -> list[dict[str, str]]:
+        if pattern is None:
+            return []
+        if pattern.id == self.active_profile_pattern_id:
+            return self._candidate_copy_list(self.match_candidates)
+        state = self.profile_states.get(pattern.id, {})
+        candidates = state.get("candidates", [])
+        return self._candidate_copy_list(candidates) if isinstance(candidates, list) else []
+
+    def _invalidate_match_profile_cache(self, pattern_id: str | None = None) -> None:
+        try:
+            self.finder_service.clear_observed_cache()
+        except Exception:
+            pass
+        if pattern_id is None:
+            self.match_profile_result_cache.clear()
+            return
+        self.match_profile_result_cache = {
+            key: value
+            for key, value in self.match_profile_result_cache.items()
+            if not key or key[0] != pattern_id
+        }
+
+    def _finder_cache_key(self, pattern, candidates: list[dict[str, str]]) -> tuple[object, ...]:
+        processed_observed = self._pattern_processed_observed_data(pattern)
+        if processed_observed is None or len(processed_observed) == 0:
+            observed_signature = None
+        else:
+            x_values = processed_observed[:, 0]
+            y_values = processed_observed[:, 1]
+            observed_signature = (
+                int(len(processed_observed)),
+                float(x_values[0]),
+                float(x_values[-1]),
+                float(np.nanmin(y_values)),
+                float(np.nanmax(y_values)),
+                bool(getattr(pattern, "processed_background_removed", False)),
+                bool(self.normalize_observed_patterns),
+            )
+        candidate_signature = []
+        for candidate in candidates:
+            try:
+                cif_path = str(self._candidate_cif_path(candidate))
+            except Exception:
+                cif_path = ""
+            candidate_signature.append((
+                self._candidate_source(candidate),
+                candidate.get("Entry", ""),
+                candidate.get("Formula", ""),
+                candidate.get("Phase", "") or candidate.get("Name", ""),
+                cif_path,
+            ))
+        return (
+            pattern.id,
+            str(getattr(pattern, "source_path", "")),
+            float(getattr(pattern, "wavelength", None) or CU_KA1_WAVELENGTH),
+            observed_signature,
+            tuple(candidate_signature),
+        )
+
+    def _finder_result_for_pattern(self, pattern, candidates: list[dict[str, str]]):
+        finder_candidates, candidate_by_key = build_finder_candidate_inputs(
+            candidates,
+            self._candidate_cif_path,
+            self._candidate_key,
+            self._candidate_phase_name,
+            self._candidate_source,
+        )
+        if not finder_candidates:
+            return None, candidate_by_key
+        cache_key = self._finder_cache_key(pattern, candidates)
+        result = self.match_profile_result_cache.get(cache_key)
+        if result is not None:
+            return result, candidate_by_key
+        processed_observed = self._pattern_processed_observed_data(pattern)
+        result = self.finder_service.run(
+            FinderInput(
+                pattern_path=pattern.source_path,
+                candidates=finder_candidates,
+                wavelength=pattern.wavelength,
+                observed_x=processed_observed[:, 0].tolist() if processed_observed is not None else None,
+                observed_y=processed_observed[:, 1].tolist() if processed_observed is not None else None,
+                subtract_background=not bool(getattr(pattern, "processed_background_removed", False)),
+            )
+        )
+        self.match_profile_result_cache[cache_key] = result
+        self._trim_match_profile_result_cache()
+        return result, candidate_by_key
 
     def _create_cursor_readout_panel(self) -> None:
         self.cursor_position_status_label = QLabel("2theta: -    I: -")
@@ -643,7 +793,14 @@ class PhaseFinderWindow(
     def _create_center_splitter(self) -> None:
         self.center_splitter = QSplitter(Qt.Orientation.Vertical)
         self._layout_state.register("center_splitter", self.center_splitter)
-        self.center_splitter.addWidget(self.match_plot)
+        self.plot_canvas = QWidget()
+        self.plot_canvas.setObjectName("plotCanvas")
+        self.plot_canvas.setStyleSheet("QWidget#plotCanvas { background: #d7dadd; border: 1px solid #56616c; }")
+        self.plot_canvas_layout = QGridLayout(self.plot_canvas)
+        self.plot_canvas_layout.setContentsMargins(10, 10, 10, 10)
+        self.plot_canvas_layout.setSpacing(0)
+        self.plot_canvas_layout.addWidget(self.match_plot, 0, 0, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.center_splitter.addWidget(self.plot_canvas)
         self.center_splitter.addWidget(self.candidate_panel)
         self.center_splitter.setStretchFactor(0, 3)
         self.center_splitter.setStretchFactor(1, 2)
@@ -655,6 +812,7 @@ class PhaseFinderWindow(
         self.compound_card = CompoundCardWidget()
         self.right_tabs.addTab(self.compound_card, "Card")
         self.right_tabs.addTab(self._database_tab(), "Databases")
+        self.right_tabs.addTab(self._plot_view_tab(), "View")
         self._layout_state.add_pin_corner(self.right_tabs, self._show_quick_help)
         self._layout_state.restore()
         self._layout_state.apply_lock()
@@ -690,6 +848,9 @@ class PhaseFinderWindow(
         self.match_zero_shifts.clear()
         self.match_cell_scales.clear()
         self.match_alignment_scores.clear()
+        self.profile_states.clear()
+        self.match_profile_result_cache.clear()
+        self.active_profile_pattern_id = None
         self.active_overlay_entry_id = None
         self.observed_pattern_plot_context.clear()
         self.match_plot_view_initialized = False
@@ -700,10 +861,10 @@ class PhaseFinderWindow(
                 except Exception:
                     pass
             self.plot_layers[layer] = []
-        if self.legend_item is not None:
-            self.legend_item = ensure_right_legend(self.match_plot, clear=True)
+        self.legend_item = ensure_right_legend(self.match_plot, clear=True)
+        self.legend_item.setVisible(bool(self.plot_view_settings.legend_visible))
         if reset_plot_range:
-            self.match_plot.setTitle("Phase Finder: pattern and candidate phase markers", color="#111111", size="13pt")
+            self._apply_plot_view_settings(self.plot_view_settings)
             self.match_plot.setXRange(0, 1, padding=0.02)
             self.match_plot.setYRange(0, 1, padding=0.02)
         self._reset_selected_elements()
@@ -725,15 +886,17 @@ class PhaseFinderWindow(
         self.candidate_search_service.shutdown_background_downloads()
         super().closeEvent(event)
 
-    def _run_background_task(self, title: str, label: str, task, on_success, on_error=None) -> None:
-        dialog = QProgressDialog(label, "", 0, 0, self)
+    def _run_background_task(self, title: str, label: str, task, on_success, on_error=None, with_progress: bool = False) -> None:
+        dialog = QProgressDialog(label, "", 0, 100 if with_progress else 0, self)
         dialog.setWindowTitle(title)
         dialog.setCancelButton(None)
         dialog.setMinimumDuration(0)
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        if with_progress:
+            dialog.setValue(0)
         dialog.show()
 
-        handle = BackgroundTaskHandle(task, self)
+        handle = BackgroundTaskHandle(task, self, accepts_progress=with_progress)
         self._background_tasks.add(handle)
 
         def cleanup() -> None:
@@ -751,6 +914,15 @@ class PhaseFinderWindow(
             else:
                 QMessageBox.warning(self, title, message or details)
 
+        def progress(message: str, value: int, maximum: int) -> None:
+            maximum = max(1, int(maximum))
+            value = max(0, min(int(value), maximum))
+            dialog.setMaximum(maximum)
+            dialog.setValue(value)
+            if message:
+                dialog.setLabelText(message)
+
+        handle.progress.connect(progress)
         handle.finished.connect(finish)
         handle.failed.connect(fail)
         handle.start()
@@ -822,65 +994,97 @@ class PhaseFinderWindow(
         QMessageBox.information(self, PHASE_FINDER_HELP_TITLE, PHASE_FINDER_HELP_TEXT)
 
     def _recalculate_match_profile(self, auto_zoom: bool = False) -> None:
-        if not self.match_candidates:
+        self._activate_current_profile_state()
+        self._save_active_profile_state()
+        patterns = self._patterns_to_display() if self.show_all_selected_patterns else [self._active_pattern()]
+        patterns = [pattern for pattern in patterns if pattern is not None]
+        if not patterns:
+            self._clear_calculated_overlay()
+            self._update_match_table()
+            return
+
+        active_pattern = self._active_pattern()
+        active_pattern_id = active_pattern.id if active_pattern is not None else ""
+        has_candidates = any(self._profile_candidates_for_pattern(pattern) for pattern in patterns)
+        if not has_candidates:
             self._clear_calculated_overlay()
             self._update_match_table()
             return
 
         self._clear_calculated_overlay()
-        pattern = self._active_pattern()
-        if pattern is None:
-            self._update_match_table()
-            return
-        finder_candidates, candidate_by_key = build_finder_candidate_inputs(
-            self.match_candidates,
-            self._candidate_cif_path,
-            self._candidate_key,
-            self._candidate_phase_name,
-            self._candidate_source,
-        )
-        if not finder_candidates:
-            self._update_match_table()
-            return
-
-        processed_observed = self._active_processed_observed_data()
         try:
-            result = self.finder_service.run(
-                FinderInput(
-                    pattern_path=pattern.source_path,
-                    candidates=finder_candidates,
-                    wavelength=pattern.wavelength,
-                    observed_x=processed_observed[:, 0].tolist() if processed_observed is not None else None,
-                    observed_y=processed_observed[:, 1].tolist() if processed_observed is not None else None,
-                    subtract_background=not self._active_background_removed(),
+            for pattern in patterns:
+                candidates = self._profile_candidates_for_pattern(pattern)
+                if not candidates:
+                    continue
+                result, candidate_by_key = self._finder_result_for_pattern(pattern, candidates)
+                if result is None:
+                    continue
+                is_active = pattern.id == active_pattern_id
+                metrics = (
+                    self.match_scales,
+                    self.match_quantities,
+                    self.match_iic,
+                    self.match_zero_shifts,
+                    self.match_cell_scales,
+                    self.match_alignment_scores,
+                ) if is_active else ({}, {}, {}, {}, {}, {})
+                layer_state = {}
+                if self.show_all_selected_patterns:
+                    profile_state = self.profile_states.get(pattern.id, {})
+                    state_value = profile_state.get("layer_visibility", {}) if isinstance(profile_state, dict) else {}
+                    layer_state = state_value if isinstance(state_value, dict) else {}
+                show_hkl_labels = bool(
+                    layer_state.get(
+                        "hkl_labels_visible",
+                        self._field_setting_value("hkl_labels_visible", False) if hasattr(self, "_field_setting_value") else self.show_hkl_labels,
+                    )
+                ) if self.show_all_selected_patterns else (
+                    self._active_hkl_labels_requested() if hasattr(self, "_active_hkl_labels_requested") else self.show_hkl_labels
                 )
-            )
+                show_peak_labels = bool(
+                    layer_state.get(
+                        "layer_peak_labels_visible",
+                        self._field_setting_value("layer_peak_labels_visible", False) if hasattr(self, "_field_setting_value") else False,
+                    )
+                ) if self.show_all_selected_patterns else (
+                    self._active_peak_labels_requested() if hasattr(self, "_active_peak_labels_requested") else False
+                )
+                draw_match_profile_result(
+                    result=result,
+                    candidate_by_key=candidate_by_key,
+                    match_plot=self.match_plot,
+                    plot_layers=self.plot_layers,
+                    show_all_selected_patterns=self.show_all_selected_patterns,
+                    active_plot_context=self.observed_pattern_plot_context.get(
+                        pattern.id,
+                        {"offset": 0.0, "raw_min": 0.0, "raw_max": 1.0, "plot_min": 0.0, "plot_max": 1.0, "height": 1.0},
+                    ),
+                    pattern_id=pattern.id,
+                    phase_color=self._phase_color,
+                    phase_legend_label=self._phase_legend_label,
+                    candidate_key=self._candidate_key,
+                    estimate_candidate_iic=self._estimate_candidate_corundum_iic,
+                    profile_fit_quality=self._profile_fit_quality,
+                    add_peak_coverage_markers=self._add_peak_coverage_markers,
+                    match_scales=metrics[0],
+                    match_quantities=metrics[1],
+                    match_iic=metrics[2],
+                    match_zero_shifts=metrics[3],
+                    match_cell_scales=metrics[4],
+                    match_alignment_scores=metrics[5],
+                    style=self.plot_style,
+                    show_hkl_labels=show_hkl_labels,
+                    show_peak_labels=show_peak_labels,
+                )
         except Exception as exc:
             QMessageBox.warning(self, "Finder calculation failed", str(exc))
             self._update_match_table()
             return
 
-        draw_match_profile_result(
-            result=result,
-            candidate_by_key=candidate_by_key,
-            match_plot=self.match_plot,
-            plot_layers=self.plot_layers,
-            show_all_selected_patterns=self.show_all_selected_patterns,
-            active_plot_context=self._active_pattern_plot_context(),
-            phase_color=self._phase_color,
-            phase_legend_label=self._phase_legend_label,
-            candidate_key=self._candidate_key,
-            estimate_candidate_iic=self._estimate_candidate_corundum_iic,
-            profile_fit_quality=self._profile_fit_quality,
-            add_peak_coverage_markers=self._add_peak_coverage_markers,
-            match_scales=self.match_scales,
-            match_quantities=self.match_quantities,
-            match_iic=self.match_iic,
-            match_zero_shifts=self.match_zero_shifts,
-            match_cell_scales=self.match_cell_scales,
-            match_alignment_scores=self.match_alignment_scores,
-        )
         self._update_match_table()
+        if hasattr(self, "_apply_plot_layer_visibility_settings"):
+            self._apply_plot_layer_visibility_settings(self.plot_view_settings)
         if auto_zoom:
             self._reset_match_plot_view()
 
@@ -935,6 +1139,7 @@ class PhaseFinderWindow(
         phase_peak_sets: list[tuple[str, str, np.ndarray]],
         observed_peak_assignments=None,
         phase_assignment_styles: dict[str, tuple[str, str]] | None = None,
+        show_peak_labels: bool | None = None,
     ) -> tuple[int, int]:
         return add_peak_coverage_markers(
             plot=self.match_plot,
@@ -946,7 +1151,12 @@ class PhaseFinderWindow(
             phase_peak_sets=phase_peak_sets,
             observed_peak_assignments=observed_peak_assignments,
             phase_assignment_styles=phase_assignment_styles,
-            show_hkl_labels=self.show_hkl_labels,
+            show_peak_labels=(
+                bool(show_peak_labels)
+                if show_peak_labels is not None
+                else self._active_peak_labels_requested() if hasattr(self, "_active_peak_labels_requested") else False
+            ),
+            style=self.plot_style,
         )
 
     def _add_assignment_markers(
@@ -966,7 +1176,8 @@ class PhaseFinderWindow(
             phase_peak_sets=[],
             observed_peak_assignments=observed_peaks,
             phase_assignment_styles=phase_assignment_styles,
-            show_hkl_labels=self.show_hkl_labels,
+            show_peak_labels=self._active_peak_labels_requested() if hasattr(self, "_active_peak_labels_requested") else False,
+            style=self.plot_style,
         )
 
     def _primary_assignment(self, assignments):
@@ -1040,6 +1251,19 @@ class PhaseFinderWindow(
     def _clear_probability_caches(self) -> None:
         self._observed_probability_cache = None
         self._candidate_probability_cache.clear()
+        self._candidate_gain_profile_cache.clear()
+
+    def _trim_candidate_probability_cache(self, limit: int = 1000) -> None:
+        while len(self._candidate_probability_cache) > limit:
+            self._candidate_probability_cache.pop(next(iter(self._candidate_probability_cache)), None)
+
+    def _trim_candidate_gain_profile_cache(self, limit: int = 128) -> None:
+        while len(self._candidate_gain_profile_cache) > limit:
+            self._candidate_gain_profile_cache.pop(next(iter(self._candidate_gain_profile_cache)), None)
+
+    def _trim_match_profile_result_cache(self, limit: int = 24) -> None:
+        while len(self.match_profile_result_cache) > limit:
+            self.match_profile_result_cache.pop(next(iter(self.match_profile_result_cache)), None)
 
     def _active_probability_context_key(self) -> tuple[object, ...]:
         pattern = self._active_pattern()
@@ -1094,8 +1318,10 @@ class PhaseFinderWindow(
             return rows
 
         gain_context = self._candidate_gain_context()
+        rows_to_rank = rows[:120]
+        tail_rows = rows[120:]
         scored_rows = []
-        for index, row in enumerate(rows):
+        for index, row in enumerate(rows_to_rank):
             scored_row = list(row)
             probability = self._candidate_row_peak_probability_from_records(
                 scored_row,
@@ -1112,9 +1338,9 @@ class PhaseFinderWindow(
             rank_score = gain if gain_context is not None else probability
             scored_rows.append((rank_score, probability, index, scored_row))
         if not any(score > 0 for score, _probability, _index, _row in scored_rows):
-            return [row for _score, _probability, _index, row in scored_rows]
+            return [row for _score, _probability, _index, row in scored_rows] + tail_rows
         scored_rows.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        return [row for _score, _probability, _index, row in scored_rows]
+        return [row for _score, _probability, _index, row in scored_rows] + tail_rows
 
     def _candidate_gain_context(self):
         if not self.match_candidates:
@@ -1147,6 +1373,7 @@ class PhaseFinderWindow(
             if total_area <= 0:
                 return None
             return {
+                "key": self._active_probability_context_key(),
                 "x": x,
                 "target": target,
                 "weights": weights,
@@ -1171,7 +1398,7 @@ class PhaseFinderWindow(
         peaks = self._candidate_cached_json_peaks(candidate)
         if not peaks:
             return 0.0
-        profile = self._profile_from_gain_peaks(peaks, context["x"], context["fwhm"])
+        profile = self._candidate_gain_profile(candidate, peaks, context)
         if profile is None or float(np.nanmax(profile)) <= 0:
             return 0.0
         x = np.asarray(context["x"], dtype=float)
@@ -1205,6 +1432,23 @@ class PhaseFinderWindow(
         if not peaks:
             return None
         return self._profile_from_gain_peaks(peaks, x, fwhm)
+
+    def _candidate_gain_profile(self, candidate: dict[str, str], peaks: list[HKLPeak], context) -> np.ndarray | None:
+        key = (
+            context.get("key"),
+            self._candidate_source(candidate),
+            candidate.get("Entry", ""),
+            round(float(context.get("fwhm", 0.0)), 5),
+            len(context.get("x", [])),
+        )
+        cached = self._candidate_gain_profile_cache.get(key)
+        if cached is not None:
+            return cached
+        profile = self._profile_from_gain_peaks(peaks, context["x"], context["fwhm"])
+        if profile is not None:
+            self._candidate_gain_profile_cache[key] = profile
+            self._trim_candidate_gain_profile_cache()
+        return profile
 
     def _profile_from_gain_peaks(self, peaks: list[HKLPeak], x: np.ndarray, fwhm: float) -> np.ndarray | None:
         try:
@@ -1310,6 +1554,7 @@ class PhaseFinderWindow(
                 return 0.0
             probability = peak_presence_probability_from_records(peaks, observed_records, structure)
             self._candidate_probability_cache[probability_key] = probability
+            self._trim_candidate_probability_cache()
             return probability
         except Exception:
             return 0.0
@@ -1571,12 +1816,38 @@ class PhaseFinderWindow(
             cif_path = self._candidate_cif_path(candidate)
             _phase, structure = create_phase_from_cif(cif_path)
             observed = self._active_observed_data()
-            self._calculate_structure_overlay(structure, preview=True)
+            self._clear_transient_candidate_preview()
+            before_counts = self._transient_candidate_preview_counts()
+            overlay = prepare_structure_overlay(
+                structure=structure,
+                observed=observed,
+                calculated_pattern_service=self.calculated_pattern_service,
+                estimate_background=self._estimate_background,
+                observed_peak_positions=self._observed_peak_positions,
+                estimate_profile_fwhm=self._estimate_profile_fwhm,
+                estimate_phase_alignment=self._estimate_phase_alignment,
+            )
+            draw_structure_overlay(
+                overlay=overlay,
+                structure=structure,
+                preview=True,
+                match_plot=self.match_plot,
+                plot_layers=self.plot_layers,
+                active_plot_context=self._active_pattern_plot_context(),
+                show_all_selected_patterns=self.show_all_selected_patterns,
+                show_hkl_labels=self.show_hkl_labels,
+                add_peak_residual_links=self._add_peak_residual_links,
+                observed=observed,
+                style=self.plot_style,
+            )
+            self._tag_transient_candidate_preview_items(before_counts)
             if observed is None:
                 self.match_plot.autoRange(padding=0.02)
                 self.match_plot_view_initialized = True
             else:
                 self._restore_plot_view_range(view_range)
+            if hasattr(self, "_apply_plot_layer_visibility_settings"):
+                self._apply_plot_layer_visibility_settings(self.plot_view_settings)
             self.active_overlay_entry_id = entry_id or None
         except Exception as exc:
             if show_errors:
@@ -1592,7 +1863,13 @@ class PhaseFinderWindow(
                 raise ValueError("RRUFF reference pattern is not indexed or the XY file is missing.")
             data = load_xy(pattern_path)
             observed = self._active_observed_data()
-            self._clear_calculated_overlay()
+            transient_preview = bool(getattr(self, "match_candidates", None))
+            if transient_preview:
+                self._clear_transient_candidate_preview()
+                before_counts = self._transient_candidate_preview_counts()
+            else:
+                self._clear_calculated_overlay()
+                before_counts = {}
             label = self._phase_legend_label(candidate)
             draw_rruff_reference(
                 plot=self.match_plot,
@@ -1600,10 +1877,15 @@ class PhaseFinderWindow(
                 data=np.asarray(data, dtype=float),
                 observed=observed,
                 label=label,
+                style=self.plot_style,
             )
+            if transient_preview:
+                self._tag_transient_candidate_preview_items(before_counts)
             if observed is None:
                 self.match_plot.autoRange(padding=0.02)
                 self.match_plot_view_initialized = True
+            if hasattr(self, "_apply_plot_layer_visibility_settings"):
+                self._apply_plot_layer_visibility_settings(self.plot_view_settings)
             self.active_overlay_entry_id = entry_id
         except Exception as exc:
             if show_errors:
@@ -1619,7 +1901,13 @@ class PhaseFinderWindow(
             if not peaks:
                 raise ValueError("PDF-2 diffraction lines were not found for this card.")
             observed = self._active_observed_data()
-            self._clear_preview_overlay()
+            transient_preview = bool(getattr(self, "match_candidates", None))
+            if transient_preview:
+                self._clear_transient_candidate_preview()
+                before_counts = self._transient_candidate_preview_counts()
+            else:
+                self._clear_preview_overlay()
+                before_counts = {}
             label = self._phase_legend_label(candidate)
             draw_pdf2_reference(
                 plot=self.match_plot,
@@ -1629,12 +1917,17 @@ class PhaseFinderWindow(
                 active_plot_context=self._active_pattern_plot_context(),
                 label=label,
                 show_hkl_labels=self.show_hkl_labels,
+                style=self.plot_style,
             )
+            if transient_preview:
+                self._tag_transient_candidate_preview_items(before_counts)
             if observed is None:
                 self.match_plot.autoRange(padding=0.02)
                 self.match_plot_view_initialized = True
             else:
                 self._restore_plot_view_range(view_range)
+            if hasattr(self, "_apply_plot_layer_visibility_settings"):
+                self._apply_plot_layer_visibility_settings(self.plot_view_settings)
             self.active_overlay_entry_id = entry_id
         except Exception as exc:
             if show_errors:
@@ -1666,7 +1959,10 @@ class PhaseFinderWindow(
             show_hkl_labels=self.show_hkl_labels,
             add_peak_residual_links=self._add_peak_residual_links,
             observed=observed,
+            style=self.plot_style,
         )
+        if hasattr(self, "_apply_plot_layer_visibility_settings"):
+            self._apply_plot_layer_visibility_settings(self.plot_view_settings)
 
     def _apply_default_phase_filter(self) -> None:
         self.exclude_all_other_elements = True
@@ -1815,7 +2111,9 @@ class PhaseFinderWindow(
         rows = [normalize_candidate_row(row) for row in rows]
         if self._rank_by_peak_probability_enabled() and rows:
             rows = self._rank_candidate_rows_by_peak_probability(rows)
-        self.candidate_table.set_rows(rows, normalize_candidate_row)
+        self.candidate_table.set_rows(rows, lambda row: row)
+        if hasattr(self, "_update_profile_view_context"):
+            self._update_profile_view_context()
         if rows:
             self._update_compound_card(self._candidate_row_values(0))
 

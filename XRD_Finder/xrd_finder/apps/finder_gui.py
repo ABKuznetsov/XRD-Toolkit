@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import time
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -48,6 +49,19 @@ def main() -> int:
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
     window.setWindowTitle("XRD Phase Finder")
+    prepared_file = os.environ.get("XRD_FINDER_PREPARED_FILE")
+    if prepared_file:
+        try:
+            Path(prepared_file).write_text("prepared", encoding="utf-8")
+        except OSError:
+            pass
+    show_signal_file = os.environ.get("XRD_FINDER_SHOW_SIGNAL_FILE")
+    if show_signal_file:
+        signal_path = Path(show_signal_file)
+        deadline = time.monotonic() + 180.0
+        while not signal_path.exists() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.05)
     window.show()
     app.processEvents()
     ready_file = os.environ.get("XRD_FINDER_READY_FILE")

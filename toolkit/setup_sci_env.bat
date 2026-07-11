@@ -2,19 +2,23 @@
 setlocal EnableExtensions EnableDelayedExpansion
 set "APP_ROOT=%~dp0.."
 for %%I in ("%APP_ROOT%") do set "APP_ROOT=%%~fI"
-set "XRD_TOOLKIT_ROOT=%LocalAppData%\XRD_Toolkit"
-set "XRD_TOOLKIT_ENV=%XRD_TOOLKIT_ROOT%\env"
-set "XRD_TOOLKIT_BIN=%XRD_TOOLKIT_ROOT%\bin"
-set "XRD_TOOLKIT_LOGS=%XRD_TOOLKIT_ROOT%\logs"
-set "LOG_FILE=%XRD_TOOLKIT_LOGS%\setup.log"
+set "SCI_ROOT=%LocalAppData%\Sci"
+set "SCI_ENV=%SCI_ROOT%\env"
+set "SCI_BIN=%SCI_ROOT%\bin"
+set "SCI_LOGS=%SCI_ROOT%\logs"
+set "LOG_FILE=%SCI_LOGS%\setup.log"
 
-if not exist "%XRD_TOOLKIT_ROOT%" mkdir "%XRD_TOOLKIT_ROOT%"
-if not exist "%XRD_TOOLKIT_BIN%" mkdir "%XRD_TOOLKIT_BIN%"
-if not exist "%XRD_TOOLKIT_LOGS%" mkdir "%XRD_TOOLKIT_LOGS%"
+if not exist "%SCI_ROOT%" mkdir "%SCI_ROOT%"
+if not exist "%SCI_BIN%" mkdir "%SCI_BIN%"
+if not exist "%SCI_LOGS%" mkdir "%SCI_LOGS%"
 
-echo [%date% %time%] Starting XRD_Toolkit setup > "%LOG_FILE%"
+echo [%date% %time%] Starting Sci environment setup > "%LOG_FILE%"
 echo Application root: %APP_ROOT%>> "%LOG_FILE%"
-echo Toolkit root: %XRD_TOOLKIT_ROOT%>> "%LOG_FILE%"
+echo Sci root: %SCI_ROOT%>> "%LOG_FILE%"
+
+call :remove_user_path "%LocalAppData%\XRD_Toolkit\bin"
+call :remove_user_path "C:\Sci\bin"
+call :remove_user_path "C:\Sci\Python"
 
 call :check_windows_version
 if errorlevel 1 exit /b 1
@@ -39,21 +43,31 @@ if errorlevel 1 (
 echo Using Python: %PYTHON_CMD%
 echo Using Python: %PYTHON_CMD%>> "%LOG_FILE%"
 
-if not exist "%XRD_TOOLKIT_ENV%\Scripts\python.exe" (
-    echo Creating shared XRD_Toolkit environment...
-    echo Creating venv at %XRD_TOOLKIT_ENV%>> "%LOG_FILE%"
-    %PYTHON_CMD% -m venv "%XRD_TOOLKIT_ENV%" >> "%LOG_FILE%" 2>&1
+if exist "%SCI_ENV%\Scripts\python.exe" (
+    "%SCI_ENV%\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>> "%LOG_FILE%"
+    if errorlevel 1 (
+        echo Existing Sci environment is broken and will be recreated.
+        echo Existing Sci environment is broken and will be recreated.>> "%LOG_FILE%"
+        call :reset_sci_env
+        if errorlevel 1 exit /b 1
+    )
 )
 
-if not exist "%XRD_TOOLKIT_ENV%\Scripts\python.exe" (
-    echo Failed to create XRD_Toolkit environment.
+if not exist "%SCI_ENV%\Scripts\python.exe" (
+    echo Creating shared Sci environment...
+    echo Creating venv at %SCI_ENV%>> "%LOG_FILE%"
+    %PYTHON_CMD% -m venv "%SCI_ENV%" >> "%LOG_FILE%" 2>&1
+)
+
+if not exist "%SCI_ENV%\Scripts\python.exe" (
+    echo Failed to create Sci environment.
     echo venv creation failed.>> "%LOG_FILE%"
     exit /b 1
 )
 
 echo Upgrading pip and build tools...
 echo Upgrading pip and build tools...>> "%LOG_FILE%"
-call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1
+call "%SCI_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1
 if errorlevel 1 goto failed
 
 echo Installing XRD Phase Finder requirements...
@@ -64,10 +78,10 @@ if errorlevel 1 goto failed
 echo Writing launchers...>> "%LOG_FILE%"
 call :write_launchers
 echo Updating user PATH...>> "%LOG_FILE%"
-call :ensure_user_path "%XRD_TOOLKIT_BIN%"
+call :ensure_user_path "%SCI_BIN%"
 
-echo [%date% %time%] XRD_Toolkit setup complete.>> "%LOG_FILE%"
-echo XRD_Toolkit environment is ready.
+echo [%date% %time%] Sci environment setup complete.>> "%LOG_FILE%"
+echo Sci environment is ready.
 exit /b 0
 
 :install_requirements
@@ -98,7 +112,7 @@ if /I "%REQ%"=="pymatgen" (
     echo pymatgen and its scientific dependencies can take several minutes.
     echo pymatgen and its scientific dependencies can take several minutes.>> "%LOG_FILE%"
 )
-call "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary --upgrade --upgrade-strategy eager "%REQ%" >> "%LOG_FILE%" 2>&1
+call "%SCI_ENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --timeout 60 --retries 3 --prefer-binary --upgrade --upgrade-strategy eager "%REQ%" >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     echo Failed to install package: %REQ%
     echo Failed to install package: %REQ%>> "%LOG_FILE%"
@@ -106,22 +120,43 @@ if errorlevel 1 (
 )
 exit /b 0
 :write_launchers
-> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo @echo off
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "APP_ROOT=%APP_ROOT%"
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "PYTHONPATH=%%APP_ROOT%%\XRD_Finder;%%PYTHONPATH%%"
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_OPENGL=software"
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_QUICK_BACKEND=software"
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_ANGLE_PLATFORM=warp"
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo set "QT_QPA_PLATFORM=windows"
->> "%XRD_TOOLKIT_BIN%\xrd-finder.cmd" echo "%XRD_TOOLKIT_ENV%\Scripts\python.exe" -m xrd_finder.apps.finder_gui %%*
-> "%XRD_TOOLKIT_BIN%\xrd-python.cmd" echo @echo off
->> "%XRD_TOOLKIT_BIN%\xrd-python.cmd" echo "%XRD_TOOLKIT_ENV%\Scripts\python.exe" %%*
+> "%SCI_BIN%\xrd-finder.cmd" echo @echo off
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "APP_ROOT=%APP_ROOT%"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "SCI_APP_ROOT=%SCI_ROOT%\apps\xrd_phase_finder"
+>> "%SCI_BIN%\xrd-finder.cmd" echo if not exist "%%SCI_APP_ROOT%%" mkdir "%%SCI_APP_ROOT%%"
+>> "%SCI_BIN%\xrd-finder.cmd" echo if not exist "%%SCI_APP_ROOT%%\data" mkdir "%%SCI_APP_ROOT%%\data"
+>> "%SCI_BIN%\xrd-finder.cmd" echo if not exist "%%SCI_APP_ROOT%%\matplotlib" mkdir "%%SCI_APP_ROOT%%\matplotlib"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "XRD_FINDER_DATA_DIR=%%SCI_APP_ROOT%%\data"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "MPLCONFIGDIR=%%SCI_APP_ROOT%%\matplotlib"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "PYTHONPATH=%%APP_ROOT%%\XRD_Finder;%%PYTHONPATH%%"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "QT_OPENGL=software"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "QT_QUICK_BACKEND=software"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "QT_ANGLE_PLATFORM=warp"
+>> "%SCI_BIN%\xrd-finder.cmd" echo set "QT_QPA_PLATFORM=windows"
+>> "%SCI_BIN%\xrd-finder.cmd" echo "%SCI_ENV%\Scripts\python.exe" -m xrd_finder.apps.finder_gui %%*
+> "%SCI_BIN%\xrd-python.cmd" echo @echo off
+>> "%SCI_BIN%\xrd-python.cmd" echo "%SCI_ENV%\Scripts\python.exe" %%*
 exit /b 0
 
 :ensure_user_path
 set "BIN_PATH=%~1"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$bin=[Environment]::ExpandEnvironmentVariables('%BIN_PATH%'); $path=[Environment]::GetEnvironmentVariable('Path','User'); if (-not $path) { $path='' }; $parts=$path -split ';' | Where-Object { $_ }; if ($parts -notcontains $bin) { $new=($parts + $bin) -join ';'; [Environment]::SetEnvironmentVariable('Path',$new,'User') }" >> "%LOG_FILE%" 2>&1
 exit /b 0
+
+:remove_user_path
+set "OLD_BIN_PATH=%~1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$old=[Environment]::ExpandEnvironmentVariables('%OLD_BIN_PATH%'); $path=[Environment]::GetEnvironmentVariable('Path','User'); if ($path) { $parts=$path -split ';' | Where-Object { $_ -and ($_ -ine $old) }; [Environment]::SetEnvironmentVariable('Path',($parts -join ';'),'User') }" >> "%LOG_FILE%" 2>&1
+exit /b 0
+
+:reset_sci_env
+set "ENV_TO_REMOVE=%SCI_ENV%"
+if /I "%ENV_TO_REMOVE%"=="%LocalAppData%\Sci\env" (
+    rmdir /s /q "%ENV_TO_REMOVE%" >> "%LOG_FILE%" 2>&1
+    exit /b 0
+)
+echo Refusing to remove unexpected environment path: %ENV_TO_REMOVE%
+echo Refusing to remove unexpected environment path: %ENV_TO_REMOVE%>> "%LOG_FILE%"
+exit /b 1
 
 :check_windows_version
 ver | findstr /r /c:" 10\." >nul
@@ -155,14 +190,19 @@ if errorlevel 1 goto install_python_direct
 echo Python 3.11+ was not found. Installing with winget...
 echo Installing Python 3.11 with winget...>> "%LOG_FILE%"
 winget install --id Python.Python.3.11 -e --source winget --accept-package-agreements --accept-source-agreements >> "%LOG_FILE%" 2>&1
-if not errorlevel 1 exit /b 0
+if not errorlevel 1 (
+    call :find_python
+    if not errorlevel 1 exit /b 0
+    echo winget reported success, but Python 3.11 still cannot be launched. Trying direct Python installer...>> "%LOG_FILE%"
+    goto install_python_direct
+)
 
 echo winget Python install failed or is unavailable. Trying direct Python installer...>> "%LOG_FILE%"
 call :install_python_direct
 exit /b %ERRORLEVEL%
 
 :install_python_direct
-set "PYTHON_INSTALLER_DIR=%XRD_TOOLKIT_ROOT%\downloads"
+set "PYTHON_INSTALLER_DIR=%SCI_ROOT%\downloads"
 set "PYTHON_INSTALLER=%PYTHON_INSTALLER_DIR%\python-3.11.9-amd64.exe"
 set "PYTHON_URL=https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 if not exist "%PYTHON_INSTALLER_DIR%" mkdir "%PYTHON_INSTALLER_DIR%"
@@ -178,9 +218,11 @@ if errorlevel 1 exit /b 1
 exit /b 0
 
 :failed
-echo XRD_Toolkit setup failed. See log: %LOG_FILE%
+echo Sci environment setup failed. See log: %LOG_FILE%
 echo [%date% %time%] setup failed.>> "%LOG_FILE%"
 exit /b 1
+
+
 
 
 

@@ -72,6 +72,9 @@ class FinderCandidateResult:
     peak_two_theta: list[float] = field(default_factory=list)
     peak_reference_two_theta: list[float] = field(default_factory=list)
     peak_intensity: list[float] = field(default_factory=list)
+    peak_h: list[int] = field(default_factory=list)
+    peak_k: list[int] = field(default_factory=list)
+    peak_l: list[int] = field(default_factory=list)
 
 
 @dataclass(slots=True)

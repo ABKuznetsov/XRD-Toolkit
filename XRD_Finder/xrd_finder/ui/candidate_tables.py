@@ -53,13 +53,22 @@ class CandidateTableWidget(QTableWidget):
         rows: list[list[str]],
         normalize_row: Callable[[list[str]], list[str]],
     ) -> None:
-        self.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            normalized_row = normalize_row(row)
-            for col_index, value in enumerate(normalized_row[: self.columnCount()]):
-                item = QTableWidgetItem(value)
-                self.setItem(row_index, col_index, item)
-        self._resize_columns()
+        previous_block_state = self.blockSignals(True)
+        self.setUpdatesEnabled(False)
+        self.setSortingEnabled(False)
+        try:
+            self.clearContents()
+            self.setRowCount(len(rows))
+            column_count = self.columnCount()
+            for row_index, row in enumerate(rows):
+                normalized_row = normalize_row(row)
+                for col_index, value in enumerate(normalized_row[:column_count]):
+                    self.setItem(row_index, col_index, QTableWidgetItem(value))
+            self._resize_columns()
+        finally:
+            self.blockSignals(previous_block_state)
+            self.setUpdatesEnabled(True)
+        self.viewport().update()
 
     def row_values(self, row: int) -> dict[str, str]:
         if row < 0 or row >= self.rowCount():
@@ -123,19 +132,26 @@ class CandidateTableWidget(QTableWidget):
         self.contextRequested.emit(self.viewport().mapToGlobal(point))
 
     def _resize_columns(self) -> None:
-        self.resizeColumnsToContents()
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         for column in range(self.columnCount()):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.setColumnWidth(1, min(max(self.columnWidth(1), 90), 170))
-        self.setColumnWidth(2, min(max(self.columnWidth(2), 150), 260))
+        if self.rowCount() <= 80:
+            self.resizeColumnsToContents()
+            entry_width = min(max(self.columnWidth(1), 90), 170)
+            formula_width = min(max(self.columnWidth(2), 150), 260)
+        else:
+            entry_width = 130
+            formula_width = 190
+        self.setColumnWidth(0, 58)
+        self.setColumnWidth(1, entry_width)
+        self.setColumnWidth(2, formula_width)
         self.setColumnWidth(4, 92)
         self.setColumnWidth(5, 82)
         self.setColumnWidth(6, 82)
@@ -173,17 +189,27 @@ class SelectedCandidatesTableWidget(QTableWidget):
         )
 
     def set_rows(self, rows: list[list[str]]) -> None:
-        self.setRowCount(len(rows))
-        for row_index, row in enumerate(rows):
-            for column, value in enumerate(row[: self.columnCount()]):
-                item = QTableWidgetItem(value)
-                if column == 0:
-                    color = QColor(value)
-                    if color.isValid():
-                        item.setBackground(color)
-                        item.setForeground(QColor("#ffffff" if color.lightness() < 150 else "#111111"))
-                self.setItem(row_index, column, item)
-        self._resize_columns()
+        previous_block_state = self.blockSignals(True)
+        self.setUpdatesEnabled(False)
+        self.setSortingEnabled(False)
+        try:
+            self.clearContents()
+            self.setRowCount(len(rows))
+            column_count = self.columnCount()
+            for row_index, row in enumerate(rows):
+                for column, value in enumerate(row[:column_count]):
+                    item = QTableWidgetItem(value)
+                    if column == 0:
+                        color = QColor(value)
+                        if color.isValid():
+                            item.setBackground(color)
+                            item.setForeground(QColor("#ffffff" if color.lightness() < 150 else "#111111"))
+                    self.setItem(row_index, column, item)
+            self._resize_columns()
+        finally:
+            self.blockSignals(previous_block_state)
+            self.setUpdatesEnabled(True)
+        self.viewport().update()
 
     def _emit_row_clicked(self, row: int, _column: int) -> None:
         if row >= 0:
@@ -197,7 +223,6 @@ class SelectedCandidatesTableWidget(QTableWidget):
         self.contextRequested.emit(self.viewport().mapToGlobal(point))
 
     def _resize_columns(self) -> None:
-        self.resizeColumnsToContents()
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         for column in range(self.columnCount()):

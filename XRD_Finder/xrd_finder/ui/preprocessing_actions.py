@@ -98,6 +98,8 @@ class PhaseFinderPreprocessingActionsMixin:
             pattern.processed_label = original_processed_label
             pattern.processed_background_removed = original_background_removed
             self._clear_probability_caches()
+            if hasattr(self, "_invalidate_match_profile_cache"):
+                self._invalidate_match_profile_cache(pattern.id if pattern is not None else None)
             self._refresh_observed_pattern_plot()
             self._rerun_active_calculation()
 
@@ -140,6 +142,8 @@ class PhaseFinderPreprocessingActionsMixin:
             pattern.processed_label = original_processed_label
             pattern.processed_background_removed = original_background_removed
             self._clear_probability_caches()
+            if hasattr(self, "_invalidate_match_profile_cache"):
+                self._invalidate_match_profile_cache(pattern.id if pattern is not None else None)
             self._refresh_observed_pattern_plot()
             self._rerun_active_calculation()
 
@@ -160,6 +164,8 @@ class PhaseFinderPreprocessingActionsMixin:
             self.project.touch()
             self.project_changed.emit()
         self._clear_probability_caches()
+        if hasattr(self, "_invalidate_match_profile_cache"):
+            self._invalidate_match_profile_cache(pattern.id if pattern is not None else None)
         self._refresh_observed_pattern_plot()
         self._rerun_active_calculation()
 
@@ -180,11 +186,19 @@ class PhaseFinderPreprocessingActionsMixin:
         self.project.touch()
         self.project_changed.emit()
         self._clear_probability_caches()
+        if hasattr(self, "_invalidate_match_profile_cache"):
+            self._invalidate_match_profile_cache(pattern.id)
         self._replace_observed_curve(x, y, name)
         self._rerun_active_calculation()
 
     def _rerun_active_calculation(self) -> None:
-        if self.match_candidates:
+        has_profile_candidates = bool(self.match_candidates)
+        if self.show_all_selected_patterns and hasattr(self, "_profile_candidates_for_pattern"):
+            has_profile_candidates = has_profile_candidates or any(
+                self._profile_candidates_for_pattern(pattern)
+                for pattern in self._patterns_to_display()
+            )
+        if has_profile_candidates:
             self._recalculate_match_profile()
         elif self.active_overlay_entry_id:
             candidate = self._selected_candidate_row()

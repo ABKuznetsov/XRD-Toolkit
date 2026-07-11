@@ -4,6 +4,8 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtGui import QFont
 
+from xrd_finder.ui.plot_style import PlotStyle
+
 
 def add_peak_coverage_markers(
     *,
@@ -16,8 +18,10 @@ def add_peak_coverage_markers(
     phase_peak_sets: list[tuple[str, str, np.ndarray]],
     observed_peak_assignments=None,
     phase_assignment_styles: dict[str, tuple[str, str]] | None = None,
-    show_hkl_labels: bool = False,
+    show_peak_labels: bool = False,
+    style: PlotStyle | None = None,
 ) -> tuple[int, int]:
+    style = style or PlotStyle()
     if observed_peak_assignments:
         return add_assignment_markers(
             plot=plot,
@@ -26,7 +30,8 @@ def add_peak_coverage_markers(
             observed_y=observed_y,
             observed_peaks=observed_peak_assignments,
             phase_assignment_styles=phase_assignment_styles or {},
-            show_hkl_labels=show_hkl_labels,
+            show_peak_labels=show_peak_labels,
+            style=style,
         )
     if not phase_peak_sets:
         return 0, 0
@@ -63,8 +68,8 @@ def add_peak_coverage_markers(
                 [marker_y],
                 pen=pg.mkPen("#ffffff", width=0.8),
                 brush=pg.mkBrush(best_color),
-                size=8,
-                symbol="o",
+                size=style.marker.size,
+                symbol=style.marker.symbol,
             )
             plot.addItem(item)
             plot_layers["coverage_markers"].append(item)
@@ -77,8 +82,8 @@ def add_peak_coverage_markers(
                 [marker_y],
                 pen=pg.mkPen("#6f6f6f", width=1.0),
                 brush=pg.mkBrush("#ffffff"),
-                size=8,
-                symbol="t",
+                size=style.marker.size,
+                symbol=style.marker.unknown_symbol,
             )
             plot.addItem(item)
             plot_layers["unknown_peaks"].append(item)
@@ -94,8 +99,10 @@ def add_assignment_markers(
     observed_y: np.ndarray,
     observed_peaks,
     phase_assignment_styles: dict[str, tuple[str, str]],
-    show_hkl_labels: bool,
+    show_peak_labels: bool,
+    style: PlotStyle | None = None,
 ) -> tuple[int, int]:
+    style = style or PlotStyle()
     y_span = max(float(np.nanmax(observed_y)) - float(np.nanmin(observed_y)), float(np.nanmax(observed_y)), 1.0)
     marker_offset = y_span * 0.05
     unknown_cutoff = float(np.nanpercentile(observed_y, 74))
@@ -128,12 +135,12 @@ def add_assignment_markers(
                 [marker_y],
                 pen=pg.mkPen("#ffffff", width=1.0),
                 brush=pg.mkBrush(color),
-                size=9,
-                symbol="d" if status == "overlapping" else "o",
+                size=style.marker.size,
+                symbol="d" if status == "overlapping" else style.marker.symbol,
             )
             plot.addItem(item)
             plot_layers["coverage_markers"].append(item)
-            if show_hkl_labels:
+            if show_peak_labels:
                 label = assignment_marker_label(assignments)
                 if label:
                     text = pg.TextItem(label, color="#111111", anchor=(0.5, 1.05))
@@ -152,8 +159,8 @@ def add_assignment_markers(
                 [marker_y],
                 pen=pg.mkPen("#6f6f6f", width=1.2),
                 brush=pg.mkBrush("#ffffff"),
-                size=9,
-                symbol="t",
+                size=style.marker.size,
+                symbol=style.marker.unknown_symbol,
                 name="unknown peak" if "unknown peak" not in legend_marker_names else None,
             )
             legend_marker_names.add("unknown peak")

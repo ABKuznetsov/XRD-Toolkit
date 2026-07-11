@@ -5,7 +5,7 @@ Windows installer and Phase Finder workflow update.
 ## Added
 
 - Windows installer distributed as a GitHub Release `.exe` asset.
-- Shared per-user `XRD_Toolkit` Python environment under `%LocalAppData%`.
+- Shared per-user `Sci` Python environment under `%LocalAppData%`.
 - Startup preview window with folder, local database, connection, update and settings checks.
 - Update prompt that shows a short change summary and lets the user choose whether to open the update download.
 - Windows 10/11-only setup checks.
@@ -44,7 +44,7 @@ Windows installer and Phase Finder workflow update.
 
 ## Verification
 
-- Python files compile successfully with Python 3.11.9 from `XRD_Toolkit`.
+- Python files compile successfully with Python 3.11.9 from `Sci`.
 - Windows installer builds with Inno Setup 6.
 - GitHub access was verified for publishing the release.
 

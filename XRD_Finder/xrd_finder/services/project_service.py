@@ -3,9 +3,7 @@ from __future__ import annotations
 from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.phase import Phase
 from xrd_finder.core.project import Project
-from xrd_finder.core.refinement import RefinementResult
 from xrd_finder.core.result import AnalysisResult
-from xrd_finder.core.series import SeriesAnalysis
 from xrd_finder.core.structure import Structure
 from xrd_finder.events.event_bus import EventBus
 from xrd_finder.events.event_types import PROJECT_CHANGED
@@ -27,16 +25,8 @@ class ProjectService:
         project.structures.append(structure)
         self._changed(project)
 
-    def add_refinement(self, project: Project, refinement: RefinementResult) -> None:
-        project.refinements.append(refinement)
-        self._changed(project)
-
     def add_analysis(self, project: Project, result: AnalysisResult) -> None:
         project.analyses.append(result)
-        self._changed(project)
-
-    def add_series(self, project: Project, series: SeriesAnalysis) -> None:
-        project.series.append(series)
         self._changed(project)
 
     def _changed(self, project: Project) -> None:

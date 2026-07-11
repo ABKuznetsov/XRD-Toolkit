@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from xrd_finder.core.base import new_id, utc_now
 from xrd_finder.core.finder_state import FinderProjectState
 from xrd_finder.core.pattern import Pattern
 from xrd_finder.core.phase import Phase
-from xrd_finder.core.refinement import RefinementResult
 from xrd_finder.core.result import AnalysisResult
-from xrd_finder.core.series import SeriesAnalysis
 from xrd_finder.core.structure import Structure
 
 
@@ -23,9 +22,9 @@ class Project:
     patterns: list[Pattern] = field(default_factory=list)
     phases: list[Phase] = field(default_factory=list)
     structures: list[Structure] = field(default_factory=list)
-    refinements: list[RefinementResult] = field(default_factory=list)
+    refinements: list[dict[str, Any]] = field(default_factory=list)
     analyses: list[AnalysisResult] = field(default_factory=list)
-    series: list[SeriesAnalysis] = field(default_factory=list)
+    series: list[dict[str, Any]] = field(default_factory=list)
     finder_state: FinderProjectState = field(default_factory=FinderProjectState)
 
     def touch(self) -> None:

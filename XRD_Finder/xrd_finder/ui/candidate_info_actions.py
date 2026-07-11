@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 import shutil
@@ -14,6 +15,8 @@ from xrd_finder.ui.candidate_enrichment import (
     crystal_system_from_cell,
     enrich_candidate_from_pdf2_details,
     enrich_candidate_from_structure,
+    format_cell,
+    has_complete_cell,
 )
 
 
@@ -47,6 +50,8 @@ class PhaseFinderCandidateInfoActionsMixin:
             return
         if self._candidate_source(candidate) not in {"COD", "USER", "MP", "CCDC", "AFLOW", "OQMD"} or not candidate.get("Entry"):
             return
+        if self._enrich_candidate_from_local_cache(candidate):
+            return
         try:
             cif_path = self._candidate_cif_path(candidate)
             _phase, structure = create_phase_from_cif(cif_path)
@@ -65,6 +70,110 @@ class PhaseFinderCandidateInfoActionsMixin:
         probability = self._structure_peak_probability(structure)
         if probability > 0:
             candidate["Match (%)"] = f"{probability:.0f}%"
+
+    def _enrich_candidate_from_local_cache(self, candidate: dict[str, str]) -> bool:
+        source = self._candidate_source(candidate)
+        entry_id = candidate.get("Entry", "")
+        entry = self.local_phase_cache.get(source, entry_id) if source and entry_id else None
+        if entry is None:
+            return False
+        has_derived_data = bool(
+            entry.peaks_json
+            or entry.atoms_json
+            or entry.iic
+            or all(value is not None for value in (entry.a, entry.b, entry.c, entry.alpha, entry.beta, entry.gamma))
+        )
+        if not has_derived_data:
+            return False
+        if entry.name:
+            candidate["Phase"] = entry.name
+        if entry.formula:
+            candidate["Formula"] = self.candidate_search_service.display_formula(entry.formula)
+        if entry.spacegroup:
+            candidate["Space group"] = entry.spacegroup
+        cell = CellParameters(
+            a=entry.a,
+            b=entry.b,
+            c=entry.c,
+            alpha=entry.alpha,
+            beta=entry.beta,
+            gamma=entry.gamma,
+            volume=entry.volume,
+        )
+        if has_complete_cell(cell):
+            candidate["Cell"] = format_cell(cell)
+            candidate["Crystal system"] = crystal_system_from_cell(cell)
+        atom_rows = self._cached_atom_rows(entry.atoms_json)
+        if atom_rows:
+            candidate["_AtomRows"] = atom_rows
+            atom_lines = []
+            for atom in atom_rows[:48]:
+                occupancy = f", occ={atom[5]}" if len(atom) > 5 and atom[5] else ""
+                atom_lines.append(f"{atom[0]} {atom[1]} ({atom[2]}, {atom[3]}, {atom[4]}{occupancy})")
+            suffix = "" if len(atom_rows) <= 48 else f"\n... +{len(atom_rows) - 48} atoms"
+            candidate["Atoms"] = "\n".join(atom_lines) + suffix
+        diffraction_rows = self._cached_diffraction_rows_for_candidate(candidate)
+        if diffraction_rows:
+            candidate["_DiffractionRows"] = diffraction_rows
+        if entry.source_text and not candidate.get("Notes"):
+            candidate["Notes"] = entry.source_text
+        if entry.iic and float(entry.iic) > 0:
+            candidate["I/Ic*"] = f"{float(entry.iic):.3g}"
+        probability = self._candidate_peak_probability_from_cache(candidate)
+        if probability > 0:
+            candidate["Match (%)"] = f"{probability:.0f}%"
+        return True
+
+    def _cached_atom_rows(self, atoms_json: str) -> list[list[str]]:
+        if not atoms_json:
+            return []
+        try:
+            atoms = json.loads(atoms_json)
+        except Exception:
+            return []
+        rows = []
+        for atom in atoms[:96]:
+            try:
+                b_value = atom.get("biso")
+                if b_value is None:
+                    b_value = atom.get("uiso")
+                rows.append(
+                    [
+                        str(atom.get("label") or atom.get("element") or ""),
+                        str(atom.get("element") or ""),
+                        self._format_cached_number(atom.get("x")),
+                        self._format_cached_number(atom.get("y")),
+                        self._format_cached_number(atom.get("z")),
+                        self._format_cached_number(atom.get("occupancy")),
+                        self._format_cached_number(b_value),
+                    ]
+                )
+            except Exception:
+                continue
+        return rows
+
+    def _format_cached_number(self, value) -> str:
+        if value is None:
+            return ""
+        try:
+            return f"{float(value):.4g}"
+        except Exception:
+            return str(value)
+
+    def _candidate_peak_probability_from_cache(self, candidate: dict[str, str]) -> float:
+        probability_data = self._probability_observed_data()
+        if probability_data is None:
+            return 0.0
+        _observed_x, _corrected, observed_records = probability_data
+        if not observed_records:
+            return 0.0
+        row = [
+            candidate.get("Source", ""),
+            candidate.get("Entry", ""),
+            candidate.get("Formula", ""),
+            candidate.get("Phase", ""),
+        ]
+        return self._candidate_row_peak_probability_from_records(row, observed_records, allow_cif_fallback=False)
 
     def _crystal_system_from_cell(self, cell: CellParameters) -> str:
         return crystal_system_from_cell(cell)
@@ -200,4 +309,3 @@ class PhaseFinderCandidateInfoActionsMixin:
             shutil.copy2(source, path)
         except Exception as exc:
             QMessageBox.warning(self, "Export CIF", str(exc))
-

@@ -132,6 +132,10 @@ class PhaseFinderProjectTreeActionsMixin:
             return
         if object_type == "pattern":
             self.project.patterns = [pattern for pattern in self.project.patterns if pattern.id != object_id]
+            if hasattr(self, "profile_states"):
+                self.profile_states.pop(object_id, None)
+            if hasattr(self, "_invalidate_match_profile_cache"):
+                self._invalidate_match_profile_cache(object_id)
         else:
             phase = current
             structure_id = phase.structure_id
@@ -146,11 +150,23 @@ class PhaseFinderProjectTreeActionsMixin:
                 for candidate in self.match_candidates
                 if not (self._candidate_source(candidate) == "USER" and candidate.get("Entry") in {object_id, phase.id})
             ]
+            for state in getattr(self, "profile_states", {}).values():
+                candidates = state.get("candidates", [])
+                if isinstance(candidates, list):
+                    state["candidates"] = [
+                        candidate
+                        for candidate in candidates
+                        if not (self._candidate_source(candidate) == "USER" and candidate.get("Entry") in {object_id, phase.id})
+                    ]
+            if hasattr(self, "_invalidate_match_profile_cache"):
+                self._invalidate_match_profile_cache()
         self.project.touch()
         self.tree.set_project(self.project)
         self._refresh_project_phase_candidates()
         self._refresh_observed_pattern_plot()
-        if self.match_candidates:
+        displayed_patterns = self._patterns_to_display() if self.show_all_selected_patterns else [self._active_pattern()]
+        has_profile_candidates = any(self._profile_candidates_for_pattern(pattern) for pattern in displayed_patterns if pattern is not None)
+        if has_profile_candidates:
             self._recalculate_match_profile()
         else:
             self._update_match_table()
@@ -169,11 +185,15 @@ class PhaseFinderProjectTreeActionsMixin:
     def _on_project_tree_selection_changed(self) -> None:
         if not hasattr(self, "match_plot"):
             return
+        if hasattr(self, "_activate_current_profile_state"):
+            self._activate_current_profile_state()
         self._clear_probability_caches()
         view_range = self._plot_view_range() if self.show_all_selected_patterns else None
         try:
             self._refresh_observed_pattern_plot()
-            if self.match_candidates:
+            displayed_patterns = self._patterns_to_display() if self.show_all_selected_patterns else [self._active_pattern()]
+            has_profile_candidates = any(self._profile_candidates_for_pattern(pattern) for pattern in displayed_patterns if pattern is not None)
+            if has_profile_candidates:
                 self._recalculate_match_profile()
             elif self.active_overlay_entry_id:
                 candidate = self._selected_candidate_row()
@@ -182,3 +202,5 @@ class PhaseFinderProjectTreeActionsMixin:
                     self._calculate_candidate_overlay(candidate, show_errors=False)
         finally:
             self._restore_plot_view_range(view_range)
+            if hasattr(self, "_update_profile_view_context"):
+                self._update_profile_view_context()

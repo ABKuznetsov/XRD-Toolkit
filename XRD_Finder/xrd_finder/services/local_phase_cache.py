@@ -168,16 +168,18 @@ class LocalPhaseCache:
         if text:
             like_text = f"%{text}%"
             compact_formula = self._formula_key(text)
+            sorted_formula = self._sorted_formula_key(text)
             where.append(
                 "("
                 "lower(entry_id) like ? or "
                 "lower(formula) like ? or "
                 "lower(name) like ? or "
                 "lower(spacegroup) like ? or "
+                "formula_key like ? or "
                 "formula_key like ?"
                 ")"
             )
-            params.extend([like_text, like_text, like_text, like_text, f"%{compact_formula}%"])
+            params.extend([like_text, like_text, like_text, like_text, f"%{compact_formula}%", f"%{sorted_formula}%"])
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -675,6 +677,12 @@ class LocalPhaseCache:
         if not tokens:
             return re.sub(r"\s+", "", (formula or "").lower())
         return "".join(f"{element.lower()}{amount}" for element, amount in tokens)
+
+    def _sorted_formula_key(self, formula: str) -> str:
+        tokens = re.findall(r"([A-Z][a-z]?)([0-9.]+)?", formula or "")
+        if not tokens:
+            return re.sub(r"\s+", "", (formula or "").lower())
+        return "".join(f"{element.lower()}{amount}" for element, amount in sorted(tokens))
 
     def _normalize_text(self, text: str) -> str:
         return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()

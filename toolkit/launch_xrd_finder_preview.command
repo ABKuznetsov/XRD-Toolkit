@@ -3,23 +3,23 @@ set -e
 unsetopt BG_NICE 2>/dev/null || true
 
 APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-XRD_TOOLKIT_ROOT="$HOME/Library/Application Support/XRD_Toolkit"
-XRD_TOOLKIT_ENV="$XRD_TOOLKIT_ROOT/env"
-XRD_FINDER_USER_ROOT="$XRD_TOOLKIT_ROOT/XRD_Finder"
-XRD_TOOLKIT_LOGS="$XRD_TOOLKIT_ROOT/logs"
-LOG_FILE="$XRD_TOOLKIT_LOGS/xrd_finder_console.log"
-READY_FILE="$XRD_TOOLKIT_ROOT/xrd_finder_ready"
+SCI_ROOT="$HOME/Library/Application Support/Sci"
+SCI_ENV="$SCI_ROOT/env"
+XRD_FINDER_USER_ROOT="$SCI_ROOT/XRD_Finder"
+SCI_LOGS="$SCI_ROOT/logs"
+LOG_FILE="$SCI_LOGS/xrd_finder_console.log"
+READY_FILE="$SCI_ROOT/xrd_finder_ready"
 
-mkdir -p "$XRD_TOOLKIT_ROOT" "$XRD_FINDER_USER_ROOT" "$XRD_TOOLKIT_LOGS"
+mkdir -p "$SCI_ROOT" "$XRD_FINDER_USER_ROOT" "$SCI_LOGS"
 
 echo "XRD Phase Finder startup preview"
 echo "Application root: $APP_ROOT"
 echo "Log file: $LOG_FILE"
 echo
 
-if [ ! -x "$XRD_TOOLKIT_ENV/bin/python" ]; then
+if [ ! -x "$SCI_ENV/bin/python" ]; then
     echo "1/4 Installing scientific Python environment..."
-    "$APP_ROOT/toolkit/setup_xrd_toolkit_env.command"
+    "$APP_ROOT/toolkit/setup_sci_env.command"
 else
     echo "1/4 Environment ready."
 fi
@@ -35,7 +35,7 @@ if [ -d "$APP_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
         if [ -n "$LOCAL_REV" ] && [ -n "$UPSTREAM_REV" ] && [ "$LOCAL_REV" != "$UPSTREAM_REV" ] && [ "$LOCAL_REV" = "$BASE_REV" ]; then
             echo "   Updating source..."
             git pull --ff-only >/dev/null
-            "$APP_ROOT/toolkit/setup_xrd_toolkit_env.command"
+            "$APP_ROOT/toolkit/setup_sci_env.command"
         else
             echo "   Already up to date."
         fi
@@ -54,7 +54,7 @@ export QT_MAC_WANTS_LAYER=1
 rm -f "$READY_FILE"
 echo "[$(date)] Starting XRD Phase Finder" > "$LOG_FILE"
 
-"$XRD_TOOLKIT_ENV/bin/python" -m xrd_finder.apps.finder_gui "$@" >> "$LOG_FILE" 2>&1 &
+"$SCI_ENV/bin/python" -m xrd_finder.apps.finder_gui "$@" >> "$LOG_FILE" 2>&1 &
 APP_PID="$!"
 
 echo "4/4 Waiting for application window..."

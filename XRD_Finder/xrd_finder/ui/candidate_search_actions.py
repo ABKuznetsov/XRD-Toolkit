@@ -5,6 +5,14 @@ from xrd_finder.services.cod_online_service import formula_elements
 
 
 class PhaseFinderCandidateSearchActionsMixin:
+    def _prepare_candidate_database_search(self) -> None:
+        if hasattr(self, "_clear_transient_candidate_preview"):
+            self._clear_transient_candidate_preview()
+        if hasattr(self, "_clear_probability_caches"):
+            self._clear_probability_caches()
+        if hasattr(self, "candidate_search_service"):
+            self.candidate_search_service.cancel_background_downloads()
+
     def _search_pdf2_text(self) -> None:
         query = self.search_input.text().strip() if self.search_input is not None else ""
         if not query and self.name_input is not None:
@@ -15,6 +23,7 @@ class PhaseFinderCandidateSearchActionsMixin:
             self._set_candidate_rows([["", "", "", "Enter a phase name, formula, DOI, or entry ID", "", ""]])
             return
         options = self._candidate_search_options()
+        self._prepare_candidate_database_search()
 
         def success(result) -> None:
             rows = result or []
@@ -26,8 +35,9 @@ class PhaseFinderCandidateSearchActionsMixin:
         self._run_background_task(
             "Find candidates",
             f"Searching phase databases for {query}...",
-            lambda: self.candidate_search_service.search_text(query, options),
+            lambda progress: self.candidate_search_service.search_text(query, options, progress=progress),
             success,
+            with_progress=True,
         )
 
     def _search_from_controls(self) -> None:
@@ -43,6 +53,7 @@ class PhaseFinderCandidateSearchActionsMixin:
         elements = list(self.selected_element_order)
         options = self._candidate_search_options()
         search_label = self.formula_sum_input.text().strip() if self.formula_sum_input is not None else " ".join(elements)
+        self._prepare_candidate_database_search()
 
         def success(result) -> None:
             rows = result or []
@@ -56,8 +67,9 @@ class PhaseFinderCandidateSearchActionsMixin:
         self._run_background_task(
             "Find candidates",
             f"Searching phase databases for {search_label}...",
-            lambda: self.candidate_search_service.search_elements(elements, options),
+            lambda progress: self.candidate_search_service.search_elements(elements, options, progress=progress),
             success,
+            with_progress=True,
         )
 
     def _candidate_search_options(self) -> CandidateSearchOptions:

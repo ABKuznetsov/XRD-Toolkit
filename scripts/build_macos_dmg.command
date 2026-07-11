@@ -44,15 +44,27 @@ XRD Phase Finder macOS installer
 2. The installer creates:
    /Applications/XRD Phase Finder.app when possible,
    otherwise ~/Applications/XRD Phase Finder.app
-   ~/Library/Application Support/XRD_Toolkit
+   ~/Library/Application Support/Sci
 3. After installation, launch XRD Phase Finder from Applications,
    Launchpad, Spotlight, or Finder.
+
+This release requires Python 3.11 or 3.12 on macOS. Python 3.13 is not used
+with the pinned Qt runtime yet.
 
 If macOS blocks the script, right-click install_macos.command and choose Open,
 or run from Terminal:
 
   xattr -dr com.apple.quarantine .
   ./install_macos.command
+
+If the app does not open after a failed first setup, remove the old runtime and
+run the installer again:
+
+  rm -rf "$HOME/Library/Application Support/Sci/env"
+  ./install_macos.command
+
+Logs:
+  ~/Library/Application Support/Sci/logs
 
 Preview launcher:
   toolkit/launch_xrd_finder_preview.command

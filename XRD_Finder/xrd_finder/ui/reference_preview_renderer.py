@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from xrd_finder.ui.pattern_plot_helpers import add_hkl_labels, plot_peak_intensity_sticks, plot_profile, scale_profile_to_reference
+from xrd_finder.ui.plot_style import PlotStyle
 
 
 def draw_rruff_reference(
@@ -12,7 +13,10 @@ def draw_rruff_reference(
     data: np.ndarray,
     observed,
     label: str,
+    style: PlotStyle | None = None,
 ) -> None:
+    style = style or PlotStyle()
+    reference_color = style.reference.color or "#1a73e8"
     y = np.asarray(data[:, 1], dtype=float)
     if observed is not None and len(observed):
         observed_max = max(float(np.nanmax(observed[:, 1])), 1.0)
@@ -21,12 +25,11 @@ def draw_rruff_reference(
         plot,
         np.asarray(data[:, 0], dtype=float),
         y,
-        "#1a73e8",
+        reference_color,
         f"RRUFF reference {label}",
-        width=1.7,
+        width=style.reference.width,
     )
     plot_layers["calculated_profile"].append(item)
-    plot.setTitle(f"RRUFF reference overlay: {label}", color="#111111", size="13pt")
 
 
 def draw_pdf2_reference(
@@ -38,7 +41,10 @@ def draw_pdf2_reference(
     active_plot_context: dict[str, float],
     label: str,
     show_hkl_labels: bool,
+    style: PlotStyle | None = None,
 ) -> None:
+    style = style or PlotStyle()
+    reference_color = style.reference.color or "#1a73e8"
     if observed is not None and len(observed):
         x_grid = np.asarray(observed[:, 0], dtype=float)
         active_plot_offset = float(active_plot_context.get("offset", 0.0))
@@ -54,12 +60,12 @@ def draw_pdf2_reference(
     stick_item = plot_peak_intensity_sticks(
         plot,
         peaks,
-        "#1a73e8",
+        reference_color,
         x_grid,
         baseline,
         height,
         f"PDF-2 reference {label}",
-        width=3.0,
+        width=style.stick.width,
     )
     plot_layers["preview_peak_positions"].append(stick_item)
     hkl_peaks = [peak for peak in peaks if getattr(peak, "h", "") or getattr(peak, "k", "") or getattr(peak, "l", "")]
@@ -67,15 +73,10 @@ def draw_pdf2_reference(
         hkl_items = add_hkl_labels(
             plot,
             hkl_peaks,
-            "#1a73e8",
+            reference_color,
             baseline_value,
             height,
             limit=18,
             above_peaks=True,
         )
         plot_layers["preview_hkl"].extend(hkl_items)
-    plot.setTitle(
-        f"PDF-2 peak preview for {label} ({len(peaks)} lines)",
-        color="#111111",
-        size="13pt",
-    )

@@ -87,6 +87,10 @@ class PhaseFinderSelectedPhasesActionsMixin:
                 candidate_copy["I/Ic*"] = f"{iic:.3g}"
             self.match_candidates.append(candidate_copy)
             self.match_structures[key] = structure
+            if hasattr(self, "_save_active_profile_state"):
+                self._save_active_profile_state()
+            if hasattr(self, "_invalidate_match_profile_cache"):
+                self._invalidate_match_profile_cache(getattr(self, "active_profile_pattern_id", None))
             if recalculate:
                 self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
             return True
@@ -110,6 +114,10 @@ class PhaseFinderSelectedPhasesActionsMixin:
                     self._add_candidate_to_match_list(candidate, show_errors=False, recalculate=False)
                 except Exception as exc:
                     errors.append(str(exc))
+            if hasattr(self, "_save_active_profile_state"):
+                self._save_active_profile_state()
+            if hasattr(self, "_invalidate_match_profile_cache"):
+                self._invalidate_match_profile_cache(getattr(self, "active_profile_pattern_id", None))
             self._recalculate_match_profile(auto_zoom=self._should_autozoom_match_profile())
         finally:
             self.unsetCursor()
@@ -167,10 +175,17 @@ class PhaseFinderSelectedPhasesActionsMixin:
         self.match_zero_shifts.pop(key, None)
         self.match_cell_scales.pop(key, None)
         self.match_alignment_scores.pop(key, None)
+        if hasattr(self, "_save_active_profile_state"):
+            self._save_active_profile_state()
+        if hasattr(self, "_invalidate_match_profile_cache"):
+            self._invalidate_match_profile_cache(getattr(self, "active_profile_pattern_id", None))
         self._recalculate_match_profile()
 
     def _change_selected_match_color(self) -> None:
         row = self.match_table.currentRow()
+        self._change_profile_candidate_color(row)
+
+    def _change_profile_candidate_color(self, row: int) -> None:
         if row < 0 or row >= len(self.match_candidates):
             return
         candidate = self.match_candidates[row]
@@ -179,6 +194,8 @@ class PhaseFinderSelectedPhasesActionsMixin:
         if not color.isValid():
             return
         candidate["_Color"] = color.name()
+        if hasattr(self, "_save_active_profile_state"):
+            self._save_active_profile_state()
         self._recalculate_match_profile()
 
     def _clear_match_list(self) -> None:
@@ -190,6 +207,10 @@ class PhaseFinderSelectedPhasesActionsMixin:
         self.match_zero_shifts.clear()
         self.match_cell_scales.clear()
         self.match_alignment_scores.clear()
+        if hasattr(self, "_save_active_profile_state"):
+            self._save_active_profile_state()
+        if hasattr(self, "_invalidate_match_profile_cache"):
+            self._invalidate_match_profile_cache(getattr(self, "active_profile_pattern_id", None))
         self._clear_calculated_overlay()
         self._update_match_table()
 
@@ -207,6 +228,8 @@ class PhaseFinderSelectedPhasesActionsMixin:
                 iic_text,
             ])
         self.match_table.set_rows(rows)
+        if hasattr(self, "_update_profile_view_context"):
+            self._update_profile_view_context()
 
     def _phase_color(self, candidate: dict[str, str], index: int) -> str:
         palette = ["#d93025", "#1a73e8", "#188038", "#f9ab00", "#8e24aa", "#7b1fa2"]

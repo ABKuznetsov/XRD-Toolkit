@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.2 - 2026-07-10
+
+### Added
+
+- Added per-profile plot visibility controls for experimental patterns, candidate preview sticks, calculated totals, individual phase profiles, backgrounds, phase tick marks, peak labels and unknown peaks.
+- Added active-profile-aware plotting groundwork for multi-pattern figures.
+
+### Changed
+
+- Improved candidate preview rendering and kept peak labels disabled by default.
+- Synchronized more View tab and plot context-menu layer toggles.
+- Reduced candidate-table redraw overhead for larger search results.
+- Cached more candidate/profile data during browsing to avoid repeated CIF enrichment and profile recalculation.
+
+### Fixed
+
+- Fixed normalization for unprocessed imported XRD files so Finder calculations use the same normalized intensity scale as the displayed experimental pattern.
+- Fixed several stale plot-layer artifacts while switching between single-pattern and multi-pattern display modes.
+
 ## 1.1.1 - 2026-07-08
 
 ### Added
@@ -20,7 +39,7 @@
 - Added a Windows installer build workflow; the generated `.exe` is published as a GitHub Release asset instead of being committed to the repository.
 - Added a modern startup preview for XRD Phase Finder with checks for application folders, local databases, database connections, updates and settings.
 - Added an update prompt that shows the latest version, a short change summary and Yes/No choice before opening the update download.
-- Added shared per-user `XRD_Toolkit` environment setup in `%LocalAppData%`, so future XRD applications can reuse the same Python runtime environment.
+- Added shared per-user `Sci` environment setup in `%LocalAppData%`, so future XRD applications can reuse the same Python runtime environment.
 - Added Windows Start Menu and optional Desktop shortcuts through the installer.
 - Added an uninstall entry for Windows Apps & Features / installed programs.
 - Added Windows 10/11 checks to the installer setup scripts and launch scripts.
@@ -66,7 +85,7 @@
 
 ### Verification
 
-- Python package compilation passed with Python 3.11.9 from the shared `XRD_Toolkit` environment.
+- Python package compilation passed with Python 3.11.9 from the shared `Sci` environment.
 - Inno Setup 6 successfully built `XRD_Phase_Finder_Setup_1.0.2.exe`.
 - GitHub CLI authentication and repository admin access were verified for `ABKuznetsov/XRD_Analysis_Toolkit`.
 ## 1.0.1 - 2026-07-04

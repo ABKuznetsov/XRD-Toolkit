@@ -25,7 +25,7 @@ class XrdViewBox(pg.ViewBox):
 def create_xrd_plot_widget() -> pg.PlotWidget:
     plot = pg.PlotWidget(viewBox=XrdViewBox())
     plot.setBackground("w")
-    plot.showGrid(x=True, y=True, alpha=0.18)
+    plot.showGrid(x=False, y=False)
     plot.setMenuEnabled(False)
     plot.setTitle("", color="#111111", size="13pt")
     for axis_name in ("bottom", "left"):
