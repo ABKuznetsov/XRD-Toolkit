@@ -53,6 +53,11 @@ function New-Label {
 
 
 
+function Utf8Text {
+    param([string]$Base64)
+    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Base64))
+}
+
 function Show-StartupNoticeDialog {
     param([System.Windows.Forms.Form]$Owner)
 
@@ -79,10 +84,10 @@ function Show-StartupNoticeDialog {
 
     $heading = New-Label "First launch after install/update" 96 18 520 30 17 "Bold" ([System.Drawing.Color]::FromArgb(68, 36, 11))
     $banner.Controls.Add($heading)
-    $subheading = New-Label "Первый запуск после установки или обновления" 96 52 520 22 11 "Bold" ([System.Drawing.Color]::FromArgb(92, 54, 10))
+    $subheading = New-Label (Utf8Text "0J/QtdGA0LLRi9C5INC30LDQv9GD0YHQuiDQv9C+0YHQu9C1INGD0YHRgtCw0L3QvtCy0LrQuCDQuNC70Lgg0L7QsdC90L7QstC70LXQvdC40Y8=") 96 52 520 22 11 "Bold" ([System.Drawing.Color]::FromArgb(92, 54, 10))
     $banner.Controls.Add($subheading)
 
-    $ru = New-Label "RU: Сейчас приложение может заметно тормозить: оно готовит окружение, создаёт кэши и может загружать данные из баз. После первой настройки запуск и поиск должны стать быстрее. Скорость зависит от вашего компьютера и интернета." 34 118 612 82 11 "Regular" ([System.Drawing.Color]::FromArgb(31, 41, 55))
+    $ru = New-Label (Utf8Text "UlU6INCh0LXQudGH0LDRgSDQv9GA0LjQu9C+0LbQtdC90LjQtSDQvNC+0LbQtdGCINC30LDQvNC10YLQvdC+INGC0L7RgNC80L7Qt9C40YLRjDog0L7QvdC+INCz0L7RgtC+0LLQuNGCINC+0LrRgNGD0LbQtdC90LjQtSwg0YHQvtC30LTQsNGR0YIg0LrRjdGI0Lgg0Lgg0LzQvtC20LXRgiDQt9Cw0LPRgNGD0LbQsNGC0Ywg0LTQsNC90L3Ri9C1INC40Lcg0LHQsNC3LiDQn9C+0YHQu9C1INC/0LXRgNCy0L7QuSDQvdCw0YHRgtGA0L7QudC60Lgg0LfQsNC/0YPRgdC6INC4INC/0L7QuNGB0Log0LTQvtC70LbQvdGLINGB0YLQsNGC0Ywg0LHRi9GB0YLRgNC10LUuINCh0LrQvtGA0L7RgdGC0Ywg0LfQsNCy0LjRgdC40YIg0L7RgiDQstCw0YjQtdCz0L4g0LrQvtC80L/RjNGO0YLQtdGA0LAg0Lgg0LjQvdGC0LXRgNC90LXRgtCwLg==") 34 118 612 82 11 "Regular" ([System.Drawing.Color]::FromArgb(31, 41, 55))
     $dialog.Controls.Add($ru)
 
     $en = New-Label "EN: The app may feel slow for a while: it is preparing the runtime, building caches and may download database data. After the first setup, startup and search should be faster. Speed depends on your computer and internet connection." 34 208 612 82 10.5 "Regular" ([System.Drawing.Color]::FromArgb(55, 65, 81))
