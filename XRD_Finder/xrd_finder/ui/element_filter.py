@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QGridLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 def periodic_table_positions() -> list[tuple[str, int, int]]:
@@ -101,6 +101,7 @@ class PeriodicTableWidget(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setToolTip(
             "Element filter table\n"
             "Left click marks an element as required.\n"

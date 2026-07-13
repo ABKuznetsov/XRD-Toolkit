@@ -8,8 +8,31 @@ SCI_ENV="$SCI_ROOT/env"
 XRD_FINDER_USER_ROOT="$SCI_ROOT/XRD_Finder"
 SCI_LOGS="$SCI_ROOT/logs"
 READY_FILE="$SCI_ROOT/xrd_finder_ready"
+PREVIEW_SCRIPT="$APP_ROOT/toolkit/launch_xrd_finder_preview_macos.py"
 
 mkdir -p "$SCI_ROOT" "$XRD_FINDER_USER_ROOT" "$SCI_LOGS"
+
+find_preview_python() {
+    for candidate in \
+        "/opt/homebrew/bin/python3" \
+        "/usr/local/bin/python3" \
+        "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3" \
+        "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3" \
+        "/usr/bin/python3" \
+        "python3"
+    do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import tkinter" >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+PREVIEW_PYTHON="$(find_preview_python || true)"
+if [ -n "$PREVIEW_PYTHON" ] && [ -f "$PREVIEW_SCRIPT" ]; then
+    exec "$PREVIEW_PYTHON" "$PREVIEW_SCRIPT" "$@"
+fi
 
 echo "XRD Phase Finder startup preview"
 echo "Application root: $APP_ROOT"

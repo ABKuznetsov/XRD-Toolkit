@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QSplitter, QVBoxLayout, QWidget
 
 from xrd_finder.ui.element_filter import PeriodicTableWidget
 from xrd_finder.ui.layout_state import SplitterLayoutState
@@ -44,6 +44,7 @@ class CompositionPanel(QWidget):
 
     def _build_element_panel(self) -> None:
         element_panel = QWidget()
+        element_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         element_layout = QVBoxLayout(element_panel)
         element_layout.setContentsMargins(0, 0, 0, 0)
         element_layout.setSpacing(6)

@@ -15,6 +15,14 @@
       "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.4/XRD_Phase_Finder_Setup_1.1.4.exe",
       "sha256": "9af2eac23cf928c102a721595f96459151c41a16631114ddb484c1221e3ceb42",
       "size_bytes": 6653971
+    },
+    {
+      "name": "XRD_Phase_Finder_macOS_1.1.4.pkg",
+      "type": "installer",
+      "platform": "macos",
+      "url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.4/XRD_Phase_Finder_macOS_1.1.4.pkg",
+      "sha256": "66da2a7d379cedc357ce0ffee209a4ea2d028837cf313ffb4e66592843581e5c",
+      "size_bytes": 7212157
     }
   ],
   "summary": [
@@ -24,5 +32,7 @@
     "Improve difference-curve and Gain (%) candidate ranking."
   ],
   "installer_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.4/XRD_Phase_Finder_Setup_1.1.4.exe",
-  "installer_sha256": "9af2eac23cf928c102a721595f96459151c41a16631114ddb484c1221e3ceb42"
+  "installer_sha256": "9af2eac23cf928c102a721595f96459151c41a16631114ddb484c1221e3ceb42",
+  "macos_installer_url": "https://github.com/ABKuznetsov/XRD_Analysis_Toolkit/releases/download/v1.1.4/XRD_Phase_Finder_macOS_1.1.4.pkg",
+  "macos_installer_sha256": "66da2a7d379cedc357ce0ffee209a4ea2d028837cf313ffb4e66592843581e5c"
 }

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QMenuBar,
     QMessageBox,
     QProgressDialog,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -186,6 +187,7 @@ class AnalysisWindow(QDialog):
         self.right_tabs = QTabWidget()
         self._register_drop_target(self.right_tabs)
         self.right_tabs.setMinimumWidth(280)
+        self.right_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._layout_state.register("main_splitter", self.main_splitter)
@@ -194,7 +196,7 @@ class AnalysisWindow(QDialog):
         self.main_splitter.addWidget(self.right_tabs)
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 0)
+        self.main_splitter.setStretchFactor(2, 1)
         self.main_splitter.setSizes([190, 980, 330])
 
         layout = QVBoxLayout(self)

@@ -4,29 +4,37 @@ export COPYFILE_DISABLE=1
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$("$ROOT"/.venv/bin/python -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$ROOT/pyproject.toml" 2>/dev/null || python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])' "$ROOT/pyproject.toml")"
-DMG_NAME="XRD_Phase_Finder_macOS_${VERSION}.dmg"
-DIST_DIR="$ROOT/dist"
-STAGE_ROOT="$DIST_DIR/macos_dmg"
-VOLUME_NAME="XRD Phase Finder ${VERSION}"
-PAYLOAD_DIR="$STAGE_ROOT/$VOLUME_NAME"
 APP_NAME="XRD Phase Finder"
-APP_BUNDLE="$PAYLOAD_DIR/$APP_NAME.app"
+IDENTIFIER="com.xrdphasefinder.app"
+PKG_IDENTIFIER="com.xrdphasefinder.pkg"
+PKG_NAME="XRD_Phase_Finder_macOS_${VERSION}.pkg"
+DIST_DIR="$ROOT/dist"
+STAGE_ROOT="$DIST_DIR/macos_pkg"
+PAYLOAD_ROOT="$STAGE_ROOT/payload"
+SCRIPTS_DIR="$STAGE_ROOT/scripts"
+APP_BUNDLE="$PAYLOAD_ROOT/Applications/$APP_NAME.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 APP_PAYLOAD_DIR="$RESOURCES_DIR/app"
-DMG_PATH="$DIST_DIR/$DMG_NAME"
+COMPONENT_PKG="$STAGE_ROOT/${APP_NAME}.component.pkg"
+PKG_PATH="$DIST_DIR/$PKG_NAME"
 
 cd "$ROOT"
 
-if ! command -v hdiutil >/dev/null 2>&1; then
-    echo "hdiutil was not found. Build the DMG on macOS."
+if ! command -v pkgbuild >/dev/null 2>&1; then
+    echo "pkgbuild was not found. Install Xcode Command Line Tools."
     exit 1
 fi
 
-echo "Building macOS DMG: $DMG_PATH"
+if ! command -v productbuild >/dev/null 2>&1; then
+    echo "productbuild was not found. Install Xcode Command Line Tools."
+    exit 1
+fi
+
+echo "Building macOS PKG: $PKG_PATH"
 rm -rf "$STAGE_ROOT"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$APP_PAYLOAD_DIR" "$DIST_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$APP_PAYLOAD_DIR" "$SCRIPTS_DIR" "$DIST_DIR"
 
 rsync -a \
     --exclude ".git/" \
@@ -78,7 +86,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>
     <string>xrd-phase-finder</string>
     <key>CFBundleIdentifier</key>
-    <string>com.xrdphasefinder.app</string>
+    <string>$IDENTIFIER</string>
     <key>CFBundleIconFile</key>
     <string>icon.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -112,31 +120,39 @@ chmod +x "$MACOS_DIR/xrd-phase-finder"
 xattr -cr "$APP_BUNDLE" >/dev/null 2>&1 || true
 xattr -dr com.apple.quarantine "$APP_BUNDLE" >/dev/null 2>&1 || true
 
-ln -s /Applications "$PAYLOAD_DIR/Applications" 2>/dev/null || true
+cat > "$SCRIPTS_DIR/postinstall" <<POSTINSTALL
+#!/bin/zsh
+set -e
 
-cat > "$PAYLOAD_DIR/README_FIRST_macOS.txt" <<README
-XRD Phase Finder macOS app
+APP_BUNDLE="/Applications/$APP_NAME.app"
+xattr -dr com.apple.quarantine "\$APP_BUNDLE" >/dev/null 2>&1 || true
+touch "\$APP_BUNDLE" >/dev/null 2>&1 || true
 
-1. Drag "XRD Phase Finder.app" to Applications.
-2. Launch it from Applications, Launchpad, Spotlight, or Finder.
-3. On first launch the app prepares:
-   ~/Library/Application Support/Sci/env
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "\$LSREGISTER" ]; then
+    "\$LSREGISTER" -f "\$APP_BUNDLE" >/dev/null 2>&1 || true
+fi
 
-This release requires Python 3.11 or 3.12 on macOS. Python 3.13 is not used
-with the pinned Qt runtime yet.
+exit 0
+POSTINSTALL
+chmod +x "$SCRIPTS_DIR/postinstall"
 
-If macOS blocks the app, right-click XRD Phase Finder.app and choose Open.
+rm -f "$COMPONENT_PKG" "$PKG_PATH"
+pkgbuild \
+    --root "$PAYLOAD_ROOT" \
+    --install-location "/" \
+    --identifier "$PKG_IDENTIFIER" \
+    --version "$VERSION" \
+    --scripts "$SCRIPTS_DIR" \
+    --filter '(^|/)\._[^/]*$' \
+    --filter '(^|/)\.DS_Store$' \
+    --filter '(^|/)\.git($|/)' \
+    --filter '(^|/)__pycache__($|/)' \
+    --filter '\.pyc$' \
+    "$COMPONENT_PKG"
 
-Logs:
-  ~/Library/Application Support/Sci/logs
-README
+productbuild \
+    --package "$COMPONENT_PKG" \
+    "$PKG_PATH"
 
-rm -f "$DMG_PATH"
-hdiutil create \
-    -volname "$VOLUME_NAME" \
-    -srcfolder "$PAYLOAD_DIR" \
-    -ov \
-    -format UDZO \
-    "$DMG_PATH"
-
-echo "$DMG_PATH"
+echo "$PKG_PATH"
